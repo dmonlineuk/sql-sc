@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/SqlSc.Cli/SqlSc.Cli.csproj" />
+    <Project Path="src/SqlSc.Core/SqlSc.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/SqlSc.Core.Tests/SqlSc.Core.Tests.csproj" />
+    <Project Path="tests/SqlSc.IntegrationTests/SqlSc.IntegrationTests.csproj" />
+  </Folder>
+</Solution>
