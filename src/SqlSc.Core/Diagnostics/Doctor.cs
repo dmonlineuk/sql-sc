@@ -25,7 +25,7 @@ public sealed record DoctorCheck(string Name, CheckResult Result, string Detail)
 /// </summary>
 public static class Doctor
 {
-    public static IReadOnlyList<DoctorCheck> Run(string? connectionString, WorkingFolder? folder)
+    public static IReadOnlyList<DoctorCheck> Run(string? connectionString, WorkingFolder? folder, bool extract = true)
     {
         var checks = new List<DoctorCheck>();
         if (folder is not null)
@@ -54,7 +54,21 @@ public static class Doctor
         checks.Add(Check("Server", () => CheckServer(connectionString)));
         checks.Add(Check("Permissions", () => CheckPermissions(connectionString)));
         checks.Add(Check("Default trace", () => CheckDefaultTrace(connectionString)));
-        checks.Add(Check("Schema extract", () => CheckExtract(connectionString)));
+        checks.Add(Check("Latency", () => CheckLatency(connectionString)));
+        CatalogSummary? catalog = null;
+        checks.Add(Check("Catalog", () =>
+        {
+            catalog = CatalogSummary.Query(connectionString);
+            return CheckCatalog(catalog);
+        }));
+        if (folder is not null && catalog is not null)
+        {
+            checks.Add(Check("Filter", () => CheckFilter(catalog, folder)));
+        }
+
+        checks.Add(extract
+            ? Check("Schema extract", () => CheckExtract(connectionString))
+            : new DoctorCheck("Schema extract", CheckResult.Skipped, "Skipped (--no-extract)"));
         return checks;
     }
 
@@ -166,6 +180,48 @@ public static class Doctor
         return (CheckResult.Ok, Invariant($"Readable; {log.Events.Count} object changes for this database since {oldest:yyyy-MM-dd HH:mm}"));
     }
 
+    private static (CheckResult, string) CheckLatency(string connectionString)
+    {
+        const int RoundTrips = 5;
+        using var connection = new SqlConnection(connectionString);
+        connection.Open();
+        using var command = new SqlCommand("SELECT 1", connection);
+        command.ExecuteScalar();
+        var stopwatch = Stopwatch.StartNew();
+        for (var i = 0; i < RoundTrips; i++)
+        {
+            command.ExecuteScalar();
+        }
+
+        return (CheckResult.Ok, Invariant($"{stopwatch.Elapsed.TotalMilliseconds / RoundTrips:0.0} ms per round trip (average of {RoundTrips})"));
+    }
+
+    private static (CheckResult, string) CheckCatalog(CatalogSummary catalog)
+    {
+        var c = catalog.Children;
+        var detail = Invariant($"{catalog.Objects.Count} objects ({Top(CatalogSummary.Largest(catalog.Objects, o => o.ObjectType, 6))}); ")
+            + Invariant($"children: {c.Columns} columns, {c.Indexes} indexes, {c.Constraints} constraints, {c.Triggers} triggers, ")
+            + Invariant($"{c.Statistics} statistics, {c.Permissions} permissions, {c.ExtendedProperties} extended properties, {c.RoleMembers} role members; ")
+            + Invariant($"code {catalog.ModuleBytes / 1048576.0:0.0} MB; largest schemas: {Top(CatalogSummary.Largest(catalog.Objects, o => o.Schema, 5))}; ")
+            + Invariant($"read in {catalog.Elapsed.TotalSeconds:0.00}s");
+        return (CheckResult.Ok, detail);
+    }
+
+    private static (CheckResult, string) CheckFilter(CatalogSummary catalog, WorkingFolder folder)
+    {
+        if (folder.Filter.IsEmpty)
+        {
+            return (CheckResult.Ok, Invariant($"No filter: all {catalog.Objects.Count} objects are tracked"));
+        }
+
+        var tracked = catalog.Tracked(folder.Filter);
+        var schemas = tracked.Select(o => o.Schema).OfType<string>().Distinct(StringComparer.Ordinal).Count();
+        return (CheckResult.Ok, Invariant($"{folder.FilterPath} keeps {tracked.Count} of {catalog.Objects.Count} objects, in {schemas} schemas"));
+    }
+
+    private static string Top(IEnumerable<(string Key, int Count)> counts) =>
+        string.Join(", ", counts.Select(c => Invariant($"{c.Key} {c.Count}")));
+
     private static (CheckResult, string) CheckExtract(string connectionString)
     {
         var stopwatch = Stopwatch.StartNew();
@@ -175,8 +231,14 @@ public static class Doctor
             ExtractReferencedServerScopedElements = true,
             IgnorePermissions = false,
         });
-        var count = model.GetObjects(DacQueryScopes.UserDefined).Count();
-        return (CheckResult.Ok, Invariant($"{count} objects in {stopwatch.Elapsed.TotalSeconds:0.00}s"));
+        var elapsed = stopwatch.Elapsed;
+        var objects = model.GetObjects(DacQueryScopes.UserDefined).ToList();
+        var largest = objects.GroupBy(o => o.ObjectType.Name, StringComparer.Ordinal)
+            .Select(g => (g.Key, Count: g.Count()))
+            .OrderByDescending(g => g.Count)
+            .ThenBy(g => g.Key, StringComparer.Ordinal)
+            .Take(6);
+        return (CheckResult.Ok, Invariant($"{objects.Count} objects in {elapsed.TotalSeconds:0.00}s ({Top(largest)})"));
     }
 
     private static T Query<T>(SqlConnection connection, string sql, Func<SqlDataReader, T> read)

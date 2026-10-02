@@ -1,6 +1,7 @@
 using Microsoft.Data.SqlClient;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
+using SqlSc.Core.Database;
 using SqlSc.Core.Diagnostics;
 using SqlSc.Core.WorkingFolders;
 
@@ -122,10 +123,37 @@ public class StatusTests(SqlServerFixture sql)
 
         var checks = Doctor.Run(sql.ConnectionString(database), WorkingFolder.Open(SqlServerFixture.DemoFolder));
 
-        Assert.Equal(["Working folder", "Connection", "Server", "Permissions", "Default trace", "Schema extract"], checks.Select(c => c.Name));
+        Assert.Equal(["Working folder", "Connection", "Server", "Permissions", "Default trace", "Latency", "Catalog", "Filter", "Schema extract"], checks.Select(c => c.Name));
         Assert.All(checks, c => Assert.True(c.Result == CheckResult.Ok, $"{c.Name}: {c.Result} {c.Detail}"));
         Assert.Contains("SQL (sa)", checks[1].Detail, StringComparison.Ordinal);
         Assert.DoesNotContain(checks, c => c.Detail.Contains("Password", StringComparison.OrdinalIgnoreCase));
+        Assert.StartsWith("No filter: all 5 objects", checks[7].Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CatalogSummaryCountsTheDemoDatabase()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+
+        var catalog = CatalogSummary.Query(sql.ConnectionString(database));
+
+        Assert.Equal(
+            ["Procedure Sales.GetCustomer", "Schema .Sales", "Table Sales.Customer", "User .app_reader", "View Sales.ActiveCustomer"],
+            catalog.Objects.Select(o => $"{o.ObjectType} {o.Schema}.{o.Name}").Order(StringComparer.Ordinal));
+        Assert.True(catalog.Children.Columns > 0);
+        Assert.True(catalog.Children.Indexes > 0);
+        Assert.True(catalog.ModuleBytes > 0);
+    }
+
+    [Fact]
+    public void DoctorCanSkipTheExtract()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+
+        var checks = Doctor.Run(sql.ConnectionString(database), folder: null, extract: false);
+
+        Assert.Equal(CheckResult.Skipped, checks[^1].Result);
+        Assert.DoesNotContain(checks, c => c.Name == "Filter");
     }
 
     [Fact]

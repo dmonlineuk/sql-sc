@@ -192,9 +192,10 @@ link.SetAction(result =>
     return 0;
 });
 
+var noExtractOption = new Option<bool>("--no-extract") { Description = "Skip the DacFx schema extract, which can take minutes on large databases." };
 var doctor = new Command("doctor", "Check the connection, permissions, default trace and working folder. The output is safe to share.")
 {
-    optionalFolderArgument, connectionOption, jsonOption,
+    optionalFolderArgument, connectionOption, jsonOption, noExtractOption,
 };
 doctor.SetAction(result =>
 {
@@ -214,7 +215,7 @@ doctor.SetAction(result =>
         }
     }
 
-    checks.AddRange(Doctor.Run(connection, folder));
+    checks.AddRange(Doctor.Run(connection, folder, extract: !result.GetValue(noExtractOption)));
     var failed = checks.Any(c => c.Result == CheckResult.Failed);
     if (result.GetValue(jsonOption))
     {
