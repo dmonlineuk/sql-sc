@@ -3,7 +3,9 @@ using Microsoft.SqlServer.Dac.Model;
 namespace SqlSc.Core.Comparison;
 
 /// <summary>Objects copied from the database model into a folder model.</summary>
-public sealed record BorrowedObjects(IReadOnlyList<TSqlObject> TopLevel, int Count);
+/// <param name="Objects">Named application objects that were copied (excludes server-level and infrastructure objects).</param>
+/// <param name="Count">Every object copied, including unnamed and infrastructure ones.</param>
+public sealed record BorrowedObjects(IReadOnlyList<TSqlObject> Objects, int Count);
 
 /// <summary>
 /// A working folder rarely builds on its own: logins, credentials, filtered-out objects and objects nobody has
@@ -35,7 +37,7 @@ public static class DatabaseReferences
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
         var copied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var topLevel = new List<TSqlObject>();
+        var objects = new List<TSqlObject>();
         var count = 0;
         foreach (var obj in databaseModel.GetObjects(DacQueryScopes.UserDefined))
         {
@@ -53,14 +55,14 @@ public static class DatabaseReferences
             if (obj.Name.HasName)
             {
                 copied.Add(Key(obj));
-                if (!IsInfrastructure(obj) && (parent is null || !copied.Contains(Key(parent))))
+                if (!IsInfrastructure(obj))
                 {
-                    topLevel.Add(obj);
+                    objects.Add(obj);
                 }
             }
         }
 
-        return new BorrowedObjects(topLevel, count);
+        return new BorrowedObjects(objects, count);
     }
 
     public static bool IsBorrowed(TSqlObject? obj) =>

@@ -4,7 +4,9 @@ using Microsoft.SqlServer.Dac.Compare;
 using Microsoft.SqlServer.Dac.Model;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Database;
+using SqlSc.Core.Filtering;
 using SqlSc.Core.Modeling;
+using SqlSc.Core.Settings;
 using SqlSc.Core.WorkingFolders;
 
 namespace SqlSc.Core.Comparison;
@@ -14,6 +16,15 @@ namespace SqlSc.Core.Comparison;
 /// </summary>
 public static class StatusService
 {
+    /// <summary>Child types that sit directly under a schema but belong to it rather than being schema-scoped objects.</summary>
+    private static readonly HashSet<string> SchemaChildTypes = new(StringComparer.Ordinal) { "ExtendedProperty", "Permission" };
+
+    /// <summary>Relationships that point from a parentless child object to the object it belongs to.</summary>
+    private static readonly HashSet<string> OwnerRelationships = new(StringComparer.Ordinal) { "Host", "SecuredObject" };
+
+    /// <summary>Types the default trace never reports by their own name.</summary>
+    private static readonly HashSet<string> UntracedTypes = new(StringComparer.Ordinal) { "ExtendedProperty", "Permission", "RoleMembership" };
+
     public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true)
     {
         var timings = new Dictionary<string, TimeSpan>();
@@ -29,6 +40,7 @@ public static class StatusService
         {
             LoadAsScriptBackedModel = true,
             ExtractReferencedServerScopedElements = true,
+            IgnorePermissions = false,
         });
         timings["loadDatabase"] = Lap(stopwatch);
 
@@ -39,16 +51,20 @@ public static class StatusService
         var borrowed = DatabaseReferences.AddMissing(folderModel.Model, databaseModel);
         timings["resolveReferences"] = Lap(stopwatch);
 
-        var dacpac = Path.Combine(Path.GetTempPath(), $"sql-sc-{Guid.NewGuid():N}.dacpac");
+        var workDirectory = Path.Combine(Path.GetTempPath(), $"sql-sc-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDirectory);
         try
         {
-            folderModel.BuildPackage(dacpac, server.DatabaseName);
+            var databasePackage = Path.Combine(workDirectory, "database.dacpac");
+            var folderPackage = Path.Combine(workDirectory, "folder.dacpac");
+            DacPackageExtensions.BuildPackage(databasePackage, databaseModel, new PackageMetadata { Name = server.DatabaseName });
+            folderModel.BuildPackage(folderPackage, server.DatabaseName);
             timings["buildPackage"] = Lap(stopwatch);
 
-            var changes = Compare(connectionString, dacpac, files)
-                .Concat(borrowed.TopLevel.Select(o => new ObjectChange(ObjectStatus.New, o.ObjectType.Name, FormatName(o.Name)!, null, null)))
-                .OrderBy(c => c.ObjectType, StringComparer.Ordinal)
-                .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            var compare = folder.Settings.Compare;
+            var raw = Compare(databasePackage, folderPackage, compare.ToDeployOptions())
+                .Concat(borrowed.Objects.Select(o => new RawChange(ObjectStatus.New, o, FormatName(o.Name)!)))
+                .Where(r => compare.Includes(r.Object.ObjectType.Name))
                 .ToList();
             timings["compare"] = Lap(stopwatch);
 
@@ -57,44 +73,30 @@ public static class StatusService
                 : new ChangeLog(false, "Not requested.", []);
             timings["changedBy"] = Lap(stopwatch);
 
-            var withChangedBy = changes
-                .Select(c => c with { LastChange = FindChange(changeLog, c.Name) })
-                .ToList();
-
             return new StatusReport(
                 server.ServerName,
                 server.DatabaseName,
                 server.Platform.ToString(),
                 folderModel.ObjectCount,
+                folder.FilterPath,
                 folderModel.Issues,
-                withChangedBy,
+                Group(raw, files, folder.Filter, changeLog),
                 changeLog,
                 timings);
         }
         finally
         {
-            File.Delete(dacpac);
+            Directory.Delete(workDirectory, recursive: true);
         }
     }
 
-    public static DacDeployOptions CompareOptions() => new()
-    {
-        DropObjectsNotInSource = true,
-        BlockOnPossibleDataLoss = true,
-        IgnoreWhitespace = true,
-        IgnoreKeywordCasing = true,
-        IgnoreSemicolonBetweenStatements = true,
-        AllowIncompatiblePlatform = true,
-        ScriptDatabaseOptions = false,
-    };
-
-    private static List<ObjectChange> Compare(string connectionString, string dacpacPath, IReadOnlyDictionary<string, string?> files)
+    private static List<RawChange> Compare(string databasePackage, string folderPackage, DacDeployOptions options)
     {
         var comparison = new SchemaComparison(
-            new SchemaCompareDatabaseEndpoint(connectionString),
-            new SchemaCompareDacpacEndpoint(dacpacPath))
+            new SchemaCompareDacpacEndpoint(databasePackage),
+            new SchemaCompareDacpacEndpoint(folderPackage))
         {
-            Options = CompareOptions(),
+            Options = options,
         };
 
         var result = comparison.Compare();
@@ -105,35 +107,118 @@ public static class StatusService
         }
 
         return result.Differences
+            .SelectMany(Flatten)
             .Where(d => !DatabaseReferences.IsBorrowed(d.TargetObject))
-            .Where(d => d.SourceObject is not { } obj || !DatabaseReferences.IsInfrastructure(obj))
-            .Select(d => ToChange(d, files))
+            .Select(d => (Difference: d, Object: d.SourceObject ?? d.TargetObject))
+            .Where(x => x.Object is not null && !DatabaseReferences.IsInfrastructure(x.Object))
+            .Select(x => new RawChange(
+                x.Difference.UpdateAction switch
+                {
+                    SchemaUpdateAction.Add => ObjectStatus.New,
+                    SchemaUpdateAction.Delete => ObjectStatus.Deleted,
+                    _ => ObjectStatus.Modified,
+                },
+                x.Object!,
+                FormatName(x.Object!.Name) ?? x.Difference.Name))
             .ToList();
     }
 
-    private static ObjectChange ToChange(SchemaDifference difference, IReadOnlyDictionary<string, string?> files)
+    /// <summary>
+    /// A difference and its child differences. A changed object whose own definition is unchanged is only reported
+    /// through its children (e.g. a view whose permissions changed).
+    /// </summary>
+    private static IEnumerable<SchemaDifference> Flatten(SchemaDifference difference)
     {
-        var obj = difference.SourceObject ?? difference.TargetObject;
-        var status = difference.UpdateAction switch
-        {
-            SchemaUpdateAction.Add => ObjectStatus.New,
-            SchemaUpdateAction.Delete => ObjectStatus.Deleted,
-            _ => ObjectStatus.Modified,
-        };
+        var children = difference.Children.SelectMany(Flatten).ToList();
+        var unchangedItself = children.Count > 0
+            && difference.UpdateAction == SchemaUpdateAction.Change
+            && difference.SourceObject is { } source && difference.TargetObject is { } target
+            && NormalizeScript(source) == NormalizeScript(target);
+        return unchangedItself ? children : children.Prepend(difference);
+    }
 
-        var name = FormatName(obj?.Name) ?? difference.Name;
-        return new ObjectChange(status, obj?.ObjectType.Name ?? "Unknown", name, files.GetValueOrDefault(name), null);
+    private static string? NormalizeScript(TSqlObject obj) =>
+        obj.TryGetScript(out var script) ? string.Join(' ', script.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)) : null;
+
+    private static List<ObjectChange> Group(
+        IEnumerable<RawChange> raw,
+        IReadOnlyDictionary<string, string?> files,
+        ObjectFilter filter,
+        ChangeLog changeLog)
+    {
+        return raw
+            .Select(r => (Raw: r, Owner: OwnerOf(r.Object)))
+            .Where(x => !DatabaseReferences.IsInfrastructure(x.Owner))
+            .Where(x => filter.Includes(x.Owner.ObjectType.Name, x.Owner.Name.Parts))
+            .GroupBy(x => Key(x.Owner, x.Raw.Name), StringComparer.OrdinalIgnoreCase)
+            .Select(g =>
+            {
+                var owner = g.First().Owner;
+                var name = FormatName(owner.Name) ?? g.First().Raw.Name;
+                var self = g.Select(x => x.Raw).FirstOrDefault(r => Key(r.Object, r.Name) == g.Key);
+                var children = g.Select(x => x.Raw)
+                    .Where(r => r != self && (self is null || self.Status == ObjectStatus.Modified || r.Status != self.Status))
+                    .Select(r => new ChildChange(r.Status, r.Object.ObjectType.Name, r.Name))
+                    .Distinct()
+                    .OrderBy(c => c.ObjectType, StringComparer.Ordinal)
+                    .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                var lastChange = g.Select(x => x.Raw.Object)
+                    .Prepend(owner)
+                    .Select(o => FindChange(changeLog, o))
+                    .OfType<ChangeEvent>()
+                    .MaxBy(e => e.StartTime);
+                return new ObjectChange(
+                    self?.Status ?? ObjectStatus.Modified,
+                    owner.ObjectType.Name,
+                    name,
+                    files.GetValueOrDefault(name),
+                    lastChange,
+                    children);
+            })
+            .OrderBy(c => c.ObjectType, StringComparer.Ordinal)
+            .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    /// <summary>The object whose script file contains <paramref name="obj"/>: e.g. a constraint's table.</summary>
+    internal static TSqlObject OwnerOf(TSqlObject obj)
+    {
+        var current = obj;
+        while (current.GetParent() is { } parent
+            && (parent.ObjectType.Name != "Schema" || SchemaChildTypes.Contains(current.ObjectType.Name)))
+        {
+            current = parent;
+        }
+
+        if (ReferenceEquals(current, obj) && obj.GetParent() is null)
+        {
+            var owner = obj.GetReferencedRelationshipInstances(DacQueryScopes.All)
+                .FirstOrDefault(r => OwnerRelationships.Contains(r.Relationship.Name) && r.Object is not null)?.Object;
+            if (owner is not null)
+            {
+                return OwnerOf(owner);
+            }
+        }
+
+        return current;
     }
 
     internal static string? FormatName(ObjectIdentifier? id) =>
         id is { HasName: true } ? string.Join('.', id.Parts.Select(p => $"[{p}]")) : null;
 
-    private static ChangeEvent? FindChange(ChangeLog log, string bracketedName)
+    private static string Key(TSqlObject obj, string fallbackName) =>
+        $"{obj.ObjectType.Name}|{FormatName(obj.Name) ?? fallbackName}";
+
+    private static ChangeEvent? FindChange(ChangeLog log, TSqlObject obj)
     {
-        var parts = bracketedName.Split("].[", StringSplitOptions.None)
-            .Select(p => p.Trim('[', ']'))
-            .ToArray();
-        return parts.Length >= 2 ? log.Find(parts[0], parts[1]) : log.Find(null, parts[0]);
+        if (!obj.Name.HasName || UntracedTypes.Contains(obj.ObjectType.Name))
+        {
+            return null;
+        }
+
+        var parts = obj.Name.Parts;
+        return parts.Count >= 2 ? log.Find(parts[^2], parts[^1]) : log.Find(null, parts[0]);
     }
 
     private static TimeSpan Lap(Stopwatch stopwatch)
@@ -142,4 +227,6 @@ public static class StatusService
         stopwatch.Restart();
         return elapsed;
     }
+
+    private sealed record RawChange(ObjectStatus Status, TSqlObject Object, string Name);
 }
