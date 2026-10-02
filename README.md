@@ -37,7 +37,8 @@ dotnet run --project src/SqlSc.Cli -- load path/to/working-folder
 dotnet run --project src/SqlSc.Cli -- link path/to/working-folder \
   --connection "Server=myserver;Database=MyDb;Authentication=Active Directory Default" --mode shared
 
-# Check the connection, permissions, default trace and folder; the output is safe to paste into an issue
+# Check the connection, permissions, default trace and folder; the output is safe to paste into an issue.
+# It also counts what the database holds and how much of it Filter.scpf keeps; --no-extract skips the slow DacFx extract.
 dotnet run --project src/SqlSc.Cli -- doctor path/to/working-folder
 
 # Compare the database with its working folder
