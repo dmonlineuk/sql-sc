@@ -172,20 +172,12 @@ public class StatusTests(SqlServerFixture sql)
     public void UnsupportedFeaturesFallBackToTheFullExtract()
     {
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
-        sql.Execute(database, """
-            CREATE TABLE [Sales].[Price]
-            (
-                [Id] int NOT NULL CONSTRAINT [PK_Price] PRIMARY KEY,
-                [ValidFrom] datetime2 GENERATED ALWAYS AS ROW START NOT NULL,
-                [ValidTo] datetime2 GENERATED ALWAYS AS ROW END NOT NULL,
-                PERIOD FOR SYSTEM_TIME ([ValidFrom], [ValidTo])
-            ) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = [Sales].[PriceHistory]))
-            """);
+        sql.Execute(database, "CREATE TABLE [Sales].[Price] ([Id] int NOT NULL CONSTRAINT [PK_Price] PRIMARY KEY) AS NODE");
 
         var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false);
 
         Assert.False(report.DatabaseModel.FromCatalog);
-        Assert.Contains(report.DatabaseModel.Unsupported, u => u.Contains("system-versioned", StringComparison.Ordinal));
+        Assert.Contains(report.DatabaseModel.Unsupported, u => u.Contains("graph", StringComparison.Ordinal));
         Assert.Contains(report.Changes, c => c.Name == "[Sales].[Price]" && c.Status == ObjectStatus.New);
     }
 

@@ -60,11 +60,39 @@ public class CatalogScripterTests
     public void UnsupportedFeaturesOnlyCountForScriptedObjects()
     {
         var catalog = Snapshot(
-            objects: [Object(1, "dbo", "Customer"), Object(2, "staging", "History")],
-            tables: [Table(1), Table(2) with { TemporalType = 2 }]);
+            objects: [Object(1, "dbo", "Customer"), Object(2, "staging", "Hot")],
+            tables: [Table(1), Table(2) with { MemoryOptimized = true }]);
 
         Assert.Empty(new CatalogScripter(catalog).Plan(StagingExcluded, []).Unsupported);
-        Assert.Equal(["table [staging].[History] (system-versioned)"], new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Unsupported);
+        Assert.Equal(["table [staging].[Hot] (memory-optimized)"], new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Unsupported);
+    }
+
+    [Fact]
+    public void ScriptsSystemVersionedTablesWithTheirHistoryTable()
+    {
+        var catalog = Snapshot(
+            objects: [Object(1, "dbo", "Price"), Object(2, "staging", "PriceHistory")],
+            tables: [Table(1) with { TemporalType = 2, HistoryTableId = 2, RetentionPeriod = 6, RetentionUnit = "MONTH" }, Table(2) with { TemporalType = 1 }],
+            columns:
+            [
+                Column(1, 1, "Id", "int"),
+                Column(1, 2, "From", "datetime2", 8) with { Precision = 27, Scale = 7, GeneratedAlways = 1, Hidden = true },
+                Column(1, 3, "To", "datetime2", 8) with { Precision = 27, Scale = 7, GeneratedAlways = 2 },
+                Column(2, 1, "Id", "int"),
+                Column(2, 2, "From", "datetime2", 8),
+                Column(2, 3, "To", "datetime2", 8),
+            ]);
+
+        var plan = new CatalogScripter(catalog).Plan(StagingExcluded, []);
+
+        Assert.Empty(plan.Unsupported);
+        Assert.Equal(2, plan.ScriptedCount);
+        var script = plan.Units.Single(u => u.Source == "o:[dbo].[Price]").Script;
+        Assert.Contains("[From] [datetime2] (7) GENERATED ALWAYS AS ROW START HIDDEN NOT NULL", script, StringComparison.Ordinal);
+        Assert.Contains("[To] [datetime2] (7) GENERATED ALWAYS AS ROW END NOT NULL", script, StringComparison.Ordinal);
+        Assert.Contains("PERIOD FOR SYSTEM_TIME ([From], [To])\n)", script, StringComparison.Ordinal);
+        Assert.Contains("WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = [staging].[PriceHistory], HISTORY_RETENTION_PERIOD = 6 MONTHS))", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("GENERATED", plan.Units.Single(u => u.Source == "o:[staging].[PriceHistory]").Script, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -80,6 +80,8 @@ public static class FolderModelLoader
 
         bool? quotedIdentifier = null;
         bool? ansiNulls = null;
+        var groups = new List<BatchGroup>();
+        var definedIn = new Dictionary<string, BatchGroup>(StringComparer.OrdinalIgnoreCase);
         foreach (var batch in script.Batches)
         {
             if (batch.Statements.Count > 0 && batch.Statements.All(s => s is PredicateSetStatement))
@@ -101,18 +103,88 @@ public static class FolderModelLoader
             }
 
             var batchText = text.Substring(batch.StartOffset, batch.FragmentLength);
+            if (groups.Count > 0 && SupportedNames(batch) is { } names)
+            {
+                var owner = names.Count > 0 && names.All(definedIn.ContainsKey) && names.Select(n => definedIn[n]).Distinct().Count() == 1
+                    ? definedIn[names[0]]
+                    : groups[^1];
+                owner.Texts.Add(batchText);
+                continue;
+            }
+
+            var group = new BatchGroup(batch.StartLine, quotedIdentifier, ansiNulls, [batchText]);
+            groups.Add(group);
+            var collector = new DefinedNameCollector();
+            batch.Accept(collector);
+            foreach (var name in collector.Names)
+            {
+                definedIn[name] = group;
+            }
+        }
+
+        foreach (var group in groups)
+        {
             try
             {
                 model.AddOrUpdateObjects(
-                    batchText,
-                    ScriptSource.Encode(file, batch.StartLine),
-                    new TSqlObjectOptions { QuotedIdentifier = quotedIdentifier, AnsiNulls = ansiNulls });
+                    string.Join("\nGO\n", group.Texts),
+                    ScriptSource.Encode(file, group.StartLine),
+                    new TSqlObjectOptions { QuotedIdentifier = group.QuotedIdentifier, AnsiNulls = group.AnsiNulls });
             }
             catch (DacModelException ex)
             {
                 issues.AddRange(ex.Messages.Count > 0
-                    ? ex.Messages.Select(m => new LoadIssue(IssueSeverity.Error, file, batch.StartLine, $"{m.Prefix}{m.Number}: {m.Message}"))
-                    : [new LoadIssue(IssueSeverity.Error, file, batch.StartLine, ex.Message)]);
+                    ? ex.Messages.Select(m => new LoadIssue(IssueSeverity.Error, file, group.StartLine, $"{m.Prefix}{m.Number}: {m.Message}"))
+                    : [new LoadIssue(IssueSeverity.Error, file, group.StartLine, ex.Message)]);
+            }
+        }
+    }
+
+    /// <summary>
+    /// The constraint or trigger names a batch of only <c>ALTER TABLE ... [NO]CHECK CONSTRAINT</c> or <c>ENABLE/DISABLE TRIGGER</c>
+    /// statements refers to, or null for any other batch. DacFx only applies these statements when they are added in the same
+    /// call as the object they modify, so they join the batch that defines it.
+    /// </summary>
+    private static List<string>? SupportedNames(TSqlBatch batch)
+    {
+        var names = new List<string>();
+        foreach (var statement in batch.Statements)
+        {
+            switch (statement)
+            {
+                case AlterTableConstraintModificationStatement constraint:
+                    names.AddRange(constraint.ConstraintNames.Select(n => n.Value));
+                    break;
+                case EnableDisableTriggerStatement trigger:
+                    names.AddRange(trigger.TriggerNames.Select(n => n.BaseIdentifier.Value));
+                    break;
+                default:
+                    return null;
+            }
+        }
+
+        return batch.Statements.Count > 0 ? names : null;
+    }
+
+    private sealed record BatchGroup(int StartLine, bool? QuotedIdentifier, bool? AnsiNulls, List<string> Texts);
+
+    private sealed class DefinedNameCollector : TSqlFragmentVisitor
+    {
+        public List<string> Names { get; } = [];
+
+        public override void Visit(ConstraintDefinition node)
+        {
+            if (node.ConstraintIdentifier is { } name)
+            {
+                Names.Add(name.Value);
+            }
+        }
+
+        public override void Visit(TriggerStatementBody node)
+        {
+            if (node.Name?.BaseIdentifier is { } name)
+            {
+                Names.Add(name.Value);
             }
         }
     }

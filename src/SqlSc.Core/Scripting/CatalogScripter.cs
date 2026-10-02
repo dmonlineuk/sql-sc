@@ -187,6 +187,11 @@ internal sealed class CatalogScripter
             Edge(new Node('o', fk.ParentId), new Node('o', fk.ReferencedId));
         }
 
+        foreach (var table in catalog.Tables.Where(t => t.HistoryTableId != 0))
+        {
+            Edge(new Node('o', table.Id), new Node('o', table.HistoryTableId));
+        }
+
         foreach (var c in catalog.Columns.Where(c => c.UserType))
         {
             var owner = catalog.Types.FirstOrDefault(t => t.TableObjectId == c.ObjectId) is { } tableType
@@ -349,7 +354,6 @@ internal sealed class CatalogScripter
         var name = Q(obj.Schema, obj.Name);
         var table = tables[obj.Id];
         var features = new List<string>();
-        if (table.TemporalType != 0) features.Add("system-versioned");
         if (table.MemoryOptimized) features.Add("memory-optimized");
         if (table.Graph) features.Add("graph");
         if (table.ChangeTracking) features.Add("change tracking");
@@ -367,11 +371,28 @@ internal sealed class CatalogScripter
         var sb = new StringBuilder();
         sb.Append(Invariant($"CREATE TABLE {name}\n(\n"));
         sb.AppendJoin(",\n", columns[obj.Id].Select(ColumnDefinition));
+        if (columns[obj.Id].FirstOrDefault(c => c.GeneratedAlways == 1) is { } start && columns[obj.Id].FirstOrDefault(c => c.GeneratedAlways == 2) is { } end)
+        {
+            sb.Append(Invariant($",\nPERIOD FOR SYSTEM_TIME ({Q(start.Name)}, {Q(end.Name)})"));
+        }
+
         sb.Append("\n)");
+        var options = new List<string>();
         var heap = indexes[obj.Id].FirstOrDefault(i => i.Type == 0);
         if (heap is { Compression: { } c } && c != "NONE")
         {
-            sb.Append(Invariant($" WITH (DATA_COMPRESSION = {c})"));
+            options.Add(Invariant($"DATA_COMPRESSION = {c}"));
+        }
+
+        if (table.TemporalType == 2 && objects.TryGetValue(table.HistoryTableId, out var history))
+        {
+            var retention = table.RetentionPeriod > 0 ? Invariant($", HISTORY_RETENTION_PERIOD = {table.RetentionPeriod} {table.RetentionUnit}S") : string.Empty;
+            options.Add(Invariant($"SYSTEM_VERSIONING = ON (HISTORY_TABLE = {Q(history.Schema, history.Name)}{retention})"));
+        }
+
+        if (options.Count > 0)
+        {
+            sb.Append(" WITH (").AppendJoin(", ", options).Append(')');
         }
 
         sb.Append('\n');
@@ -673,6 +694,15 @@ internal sealed class CatalogScripter
         if (c.Collation is { } collation && !string.Equals(collation, catalog.Collation, StringComparison.Ordinal))
         {
             sb.Append(" COLLATE ").Append(collation);
+        }
+
+        if (c.GeneratedAlways != 0)
+        {
+            sb.Append(c.GeneratedAlways == 1 ? " GENERATED ALWAYS AS ROW START" : " GENERATED ALWAYS AS ROW END");
+            if (c.Hidden)
+            {
+                sb.Append(" HIDDEN");
+            }
         }
 
         if (c.Sparse)

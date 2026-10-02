@@ -6,7 +6,7 @@ internal sealed record SchemaRow(int Id, string Name, string Owner);
 
 internal sealed record ObjectRow(int Id, string Schema, string Name, string Type, int ParentId);
 
-internal sealed record TableRow(int Id, int TemporalType, bool MemoryOptimized, bool Graph, int LockEscalation, bool LargeValuesOutOfRow, int TextInRowLimit, bool ChangeTracking, bool FileTable);
+internal sealed record TableRow(int Id, int TemporalType, bool MemoryOptimized, bool Graph, int LockEscalation, bool LargeValuesOutOfRow, int TextInRowLimit, bool ChangeTracking, bool FileTable, int HistoryTableId = 0, int RetentionPeriod = -1, string? RetentionUnit = null);
 
 internal sealed record ColumnRow(
     int ObjectId,
@@ -31,7 +31,9 @@ internal sealed record ColumnRow(
     bool Unsupported,
     string? DefaultName,
     string? DefaultDefinition,
-    bool DefaultSystemNamed);
+    bool DefaultSystemNamed,
+    int GeneratedAlways = 0,
+    bool Hidden = false);
 
 internal sealed record IndexRow(
     int ObjectId,
@@ -161,18 +163,19 @@ internal sealed class CatalogSnapshot
         Tables = Read(connection, """
             SELECT t.object_id, t.temporal_type, t.is_memory_optimized, CAST(t.is_node | t.is_edge AS bit), t.lock_escalation,
                    t.large_value_types_out_of_row, t.text_in_row_limit,
-                   CAST(CASE WHEN ct.object_id IS NULL THEN 0 ELSE 1 END AS bit), t.is_filetable
+                   CAST(CASE WHEN ct.object_id IS NULL THEN 0 ELSE 1 END AS bit), t.is_filetable,
+                   ISNULL(t.history_table_id, 0), ISNULL(t.history_retention_period, -1), t.history_retention_period_unit_desc
             FROM sys.tables AS t LEFT JOIN sys.change_tracking_tables AS ct ON ct.object_id = t.object_id
             WHERE t.is_ms_shipped = 0
-            """, r => new TableRow(r.GetInt32(0), r.GetByte(1), r.GetBoolean(2), r.GetBoolean(3), r.GetByte(4), r.GetBoolean(5), r.GetInt32(6), r.GetBoolean(7), r.GetBoolean(8))),
+            """, r => new TableRow(r.GetInt32(0), r.GetByte(1), r.GetBoolean(2), r.GetBoolean(3), r.GetByte(4), r.GetBoolean(5), r.GetInt32(6), r.GetBoolean(7), r.GetBoolean(8), r.GetInt32(9), r.GetInt32(10), NullableString(r, 11))),
         Columns = Read(connection, """
             SELECT c.object_id, c.column_id, c.name, ts.name, t.name, t.is_user_defined, c.max_length, c.precision, c.scale,
                    c.collation_name, c.is_nullable, c.is_identity,
                    CAST(ic.seed_value AS nvarchar(64)), CAST(ic.increment_value AS nvarchar(64)), ISNULL(ic.is_not_for_replication, 0),
                    cc.definition, ISNULL(cc.is_persisted, 0), c.is_sparse, c.is_rowguidcol,
-                   CAST(CASE WHEN c.is_filestream = 1 OR c.is_column_set = 1 OR c.generated_always_type <> 0
+                   CAST(CASE WHEN c.is_filestream = 1 OR c.is_column_set = 1 OR c.generated_always_type NOT IN (0, 1, 2)
                              OR c.encryption_type IS NOT NULL OR c.is_masked = 1 OR c.xml_collection_id <> 0 THEN 1 ELSE 0 END AS bit),
-                   dc.name, dc.definition, ISNULL(dc.is_system_named, 0)
+                   dc.name, dc.definition, ISNULL(dc.is_system_named, 0), c.generated_always_type, c.is_hidden
             FROM sys.columns AS c
             JOIN sys.objects AS o ON o.object_id = c.object_id
             JOIN sys.types AS t ON t.user_type_id = c.user_type_id
@@ -186,7 +189,7 @@ internal sealed class CatalogSnapshot
                 r.GetInt32(0), r.GetInt32(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5), r.GetInt16(6), r.GetByte(7), r.GetByte(8),
                 NullableString(r, 9), r.GetBoolean(10), r.GetBoolean(11), NullableString(r, 12), NullableString(r, 13), r.GetBoolean(14),
                 NullableString(r, 15), r.GetBoolean(16), r.GetBoolean(17), r.GetBoolean(18), r.GetBoolean(19),
-                NullableString(r, 20), NullableString(r, 21), r.GetBoolean(22))),
+                NullableString(r, 20), NullableString(r, 21), r.GetBoolean(22), r.GetByte(23), r.GetBoolean(24))),
         Indexes = Read(connection, """
             SELECT i.object_id, i.index_id, i.name, i.type, i.is_unique, i.is_primary_key, i.is_unique_constraint,
                    ISNULL(kc.is_system_named, 0), i.ignore_dup_key, i.fill_factor, i.is_padded, i.allow_row_locks, i.allow_page_locks,
