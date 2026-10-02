@@ -9,4 +9,8 @@
     <PackageReference Include="Microsoft.SqlServer.DacFx" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="SqlSc.Core.Tests" />
+  </ItemGroup>
+
 </Project>

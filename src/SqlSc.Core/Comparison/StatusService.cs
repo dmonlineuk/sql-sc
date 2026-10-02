@@ -6,6 +6,7 @@ using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Database;
 using SqlSc.Core.Filtering;
 using SqlSc.Core.Modeling;
+using SqlSc.Core.Scripting;
 using SqlSc.Core.Settings;
 using SqlSc.Core.WorkingFolders;
 
@@ -25,7 +26,7 @@ public static class StatusService
     /// <summary>Types the default trace never reports by their own name.</summary>
     private static readonly HashSet<string> UntracedTypes = new(StringComparer.Ordinal) { "ExtendedProperty", "Permission", "RoleMembership" };
 
-    public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true)
+    public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false)
     {
         var timings = new Dictionary<string, TimeSpan>();
         var stopwatch = Stopwatch.StartNew();
@@ -36,12 +37,13 @@ public static class StatusService
         using var folderModel = FolderModelLoader.Load(folder, server.Platform);
         timings["loadFolder"] = Lap(stopwatch);
 
-        using var databaseModel = TSqlModel.LoadFromDatabase(connectionString, new ModelExtractOptions
-        {
-            LoadAsScriptBackedModel = true,
-            ExtractReferencedServerScopedElements = true,
-            IgnorePermissions = false,
-        });
+        using var database = DatabaseModelLoader.Load(
+            connectionString,
+            server.Platform,
+            folder.Filter,
+            DatabaseModelLoader.UnresolvedNames(folderModel.Model),
+            fullExtract);
+        var databaseModel = database.Model;
         timings["loadDatabase"] = Lap(stopwatch);
 
         var files = folderModel.Model.GetObjects(DacQueryScopes.UserDefined)
@@ -82,7 +84,35 @@ public static class StatusService
                 folderModel.Issues,
                 Group(raw, files, folder.Filter, changeLog),
                 changeLog,
-                timings);
+                timings,
+                database.Info);
+        }
+        finally
+        {
+            Directory.Delete(workDirectory, recursive: true);
+        }
+    }
+
+    /// <summary>
+    /// Differences between two models of the same database, for objects <paramref name="filter"/> tracks,
+    /// formatted as "Status Type Name". Used to check catalog scripting against DacFx's full extract.
+    /// </summary>
+    internal static IReadOnlyList<string> CompareModels(TSqlModel expected, TSqlModel actual, ObjectFilter filter)
+    {
+        var workDirectory = Path.Combine(Path.GetTempPath(), $"sql-sc-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(workDirectory);
+        try
+        {
+            var expectedPackage = Path.Combine(workDirectory, "expected.dacpac");
+            var actualPackage = Path.Combine(workDirectory, "actual.dacpac");
+            DacPackageExtensions.BuildPackage(expectedPackage, expected, new PackageMetadata { Name = "expected" });
+            DacPackageExtensions.BuildPackage(actualPackage, actual, new PackageMetadata { Name = "actual" });
+            return Compare(expectedPackage, actualPackage, new CompareSettings().ToDeployOptions())
+                .Select(r => (Raw: r, Owner: OwnerOf(r.Object)))
+                .Where(x => !DatabaseReferences.IsInfrastructure(x.Owner) && filter.Includes(x.Owner.ObjectType.Name, x.Owner.Name.Parts))
+                .Select(x => $"{x.Raw.Status} {x.Raw.Object.ObjectType.Name} {x.Raw.Name}")
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
         }
         finally
         {

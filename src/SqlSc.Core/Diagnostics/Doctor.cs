@@ -3,8 +3,11 @@ using System.Globalization;
 using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Dac.Model;
 using SqlSc.Core.ChangeTracking;
+using SqlSc.Core.Comparison;
 using SqlSc.Core.Database;
+using SqlSc.Core.Filtering;
 using SqlSc.Core.Modeling;
+using SqlSc.Core.Scripting;
 using SqlSc.Core.WorkingFolders;
 
 namespace SqlSc.Core.Diagnostics;
@@ -66,9 +69,27 @@ public static class Doctor
             checks.Add(Check("Filter", () => CheckFilter(catalog, folder)));
         }
 
-        checks.Add(extract
-            ? Check("Schema extract", () => CheckExtract(connectionString))
-            : new DoctorCheck("Schema extract", CheckResult.Skipped, "Skipped (--no-extract)"));
+        var filter = folder?.Filter ?? ObjectFilter.IncludeAll;
+        TSqlModel? scripted = null;
+        try
+        {
+            checks.Add(Check("Catalog scripting", () =>
+            {
+                var (model, info) = DatabaseModelLoader.TryLoadFromCatalog(connectionString, ServerInfo.Query(connectionString).Platform, filter, []);
+                scripted = model;
+                return model is null
+                    ? (CheckResult.Warning, "status will use the " + info.Describe())
+                    : (CheckResult.Ok, info.Describe());
+            }));
+            checks.Add(extract
+                ? Check("Schema extract", () => CheckExtract(connectionString, scripted, filter))
+                : new DoctorCheck("Schema extract", CheckResult.Skipped, "Skipped (--no-extract)"));
+        }
+        finally
+        {
+            scripted?.Dispose();
+        }
+
         return checks;
     }
 
@@ -222,15 +243,10 @@ public static class Doctor
     private static string Top(IEnumerable<(string Key, int Count)> counts) =>
         string.Join(", ", counts.Select(c => Invariant($"{c.Key} {c.Count}")));
 
-    private static (CheckResult, string) CheckExtract(string connectionString)
+    private static (CheckResult, string) CheckExtract(string connectionString, TSqlModel? scripted, ObjectFilter filter)
     {
         var stopwatch = Stopwatch.StartNew();
-        using var model = TSqlModel.LoadFromDatabase(connectionString, new ModelExtractOptions
-        {
-            LoadAsScriptBackedModel = true,
-            ExtractReferencedServerScopedElements = true,
-            IgnorePermissions = false,
-        });
+        using var model = DatabaseModelLoader.LoadFull(connectionString);
         var elapsed = stopwatch.Elapsed;
         var objects = model.GetObjects(DacQueryScopes.UserDefined).ToList();
         var largest = objects.GroupBy(o => o.ObjectType.Name, StringComparer.Ordinal)
@@ -238,7 +254,16 @@ public static class Doctor
             .OrderByDescending(g => g.Count)
             .ThenBy(g => g.Key, StringComparer.Ordinal)
             .Take(6);
-        return (CheckResult.Ok, Invariant($"{objects.Count} objects in {elapsed.TotalSeconds:0.00}s ({Top(largest)})"));
+        var detail = Invariant($"{objects.Count} objects in {elapsed.TotalSeconds:0.00}s ({Top(largest)})");
+        if (scripted is null)
+        {
+            return (CheckResult.Ok, detail);
+        }
+
+        var differences = StatusService.CompareModels(model, scripted, filter);
+        return differences.Count == 0
+            ? (CheckResult.Ok, detail + "; catalog scripting matches it")
+            : (CheckResult.Warning, detail + Invariant($"; catalog scripting differs in {differences.Count} places: {string.Join("; ", differences.Take(10))}"));
     }
 
     private static T Query<T>(SqlConnection connection, string sql, Func<SqlDataReader, T> read)
