@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>sql-sc</AssemblyName>
+    <RootNamespace>SqlSc.Cli</RootNamespace>
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>sql-sc</ToolCommandName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.CommandLine" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\SqlSc.Core\SqlSc.Core.csproj" />
+  </ItemGroup>
+
+</Project>

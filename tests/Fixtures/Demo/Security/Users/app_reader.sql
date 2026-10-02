@@ -1,0 +1,2 @@
+CREATE USER [app_reader] WITHOUT LOGIN
+GO
