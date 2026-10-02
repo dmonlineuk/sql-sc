@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 using SqlSc.Core.Filtering;
 
 namespace SqlSc.Core.Scripting;
@@ -346,7 +347,7 @@ internal sealed class CatalogScripter
             yield break;
         }
 
-        yield return new ScriptUnit("o:" + Q(obj.Schema, obj.Name), module.Definition, module.QuotedIdentifier, module.AnsiNulls, type, obj.Schema, obj.Name);
+        yield return new ScriptUnit("o:" + Q(obj.Schema, obj.Name), WithName(module.Definition, module.QuotedIdentifier, obj.Schema, obj.Name), module.QuotedIdentifier, module.AnsiNulls, type, obj.Schema, obj.Name);
     }
 
     private List<ScriptUnit> ScriptTable(ObjectRow obj)
@@ -437,9 +438,10 @@ internal sealed class CatalogScripter
         {
             if (modules.TryGetValue(trigger.Id, out var module) && module.Definition is not null)
             {
+                var definition = WithName(module.Definition, module.QuotedIdentifier, trigger.Schema, trigger.Name);
                 var script = module.TriggerDisabled
-                    ? Invariant($"{module.Definition}{BatchSeparator}DISABLE TRIGGER {Q(trigger.Schema, trigger.Name)} ON {name}")
-                    : module.Definition;
+                    ? Invariant($"{definition}{BatchSeparator}DISABLE TRIGGER {Q(trigger.Schema, trigger.Name)} ON {name}")
+                    : definition;
                 units.Add(new ScriptUnit("o:" + Q(trigger.Schema, trigger.Name), script, module.QuotedIdentifier, module.AnsiNulls, "DmlTrigger", trigger.Schema, trigger.Name));
             }
             else
@@ -796,6 +798,34 @@ internal sealed class CatalogScripter
             "int" or "bigint" or "smallint" or "tinyint" or "bit" or "decimal" or "numeric" or "float" or "real" or "money" => value,
             _ => N(value),
         };
+
+    /// <summary>
+    /// A module definition with the name in its CREATE statement replaced by the object's actual schema and name.
+    /// sys.sql_modules keeps the text as written, so a module created without a schema, or renamed with sp_rename, names something else.
+    /// </summary>
+    internal static string WithName(string definition, bool quotedIdentifier, string schema, string name)
+    {
+        var fragment = new TSql170Parser(quotedIdentifier).Parse(new StringReader(definition), out var errors);
+        if (errors.Count > 0 || fragment is not TSqlScript { Batches: [{ Statements: [var statement, ..] }, ..] })
+        {
+            return definition;
+        }
+
+        var target = statement switch
+        {
+            ProcedureStatementBody procedure => procedure.ProcedureReference?.Name,
+            FunctionStatementBody function => function.Name,
+            ViewStatementBody view => view.SchemaObjectName,
+            TriggerStatementBody trigger => trigger.Name,
+            _ => null,
+        };
+        if (target is null || (target.SchemaIdentifier?.Value == schema && target.BaseIdentifier?.Value == name && target.DatabaseIdentifier is null))
+        {
+            return definition;
+        }
+
+        return string.Concat(definition.AsSpan(0, target.StartOffset), Q(schema, name), definition.AsSpan(target.StartOffset + target.FragmentLength));
+    }
 
     internal static string Q(string name) => "[" + name.Replace("]", "]]", StringComparison.Ordinal) + "]";
 

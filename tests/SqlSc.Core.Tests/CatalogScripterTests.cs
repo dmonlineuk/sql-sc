@@ -169,6 +169,18 @@ public class CatalogScripterTests
         Assert.EndsWith("\nGO\nDISABLE TRIGGER [dbo].[trCustomer] ON [dbo].[Customer]", unit.Script, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("CREATE PROCEDURE GetCollection AS SELECT 1", "CREATE PROCEDURE [app].[GetCollection] AS SELECT 1")]
+    [InlineData("create procedure [app].[OldName];1 as select 1", "create procedure [app].[GetCollection];1 as select 1")]
+    [InlineData("/* GetCollection */\nCREATE OR ALTER FUNCTION dbo.GetCollection() RETURNS int AS BEGIN RETURN 1 END", "/* GetCollection */\nCREATE OR ALTER FUNCTION [app].[GetCollection]() RETURNS int AS BEGIN RETURN 1 END")]
+    [InlineData("CREATE VIEW GetCollection AS SELECT 1 AS X", "CREATE VIEW [app].[GetCollection] AS SELECT 1 AS X")]
+    [InlineData("CREATE TRIGGER GetCollection ON app.T AFTER INSERT AS RETURN", "CREATE TRIGGER [app].[GetCollection] ON app.T AFTER INSERT AS RETURN")]
+    [InlineData("CREATE PROCEDURE app.GetCollection AS SELECT 1", "CREATE PROCEDURE app.GetCollection AS SELECT 1")]
+    public void ModuleDefinitionsCreateTheObjectsActualName(string definition, string expected)
+    {
+        Assert.Equal(expected, CatalogScripter.WithName(definition, quotedIdentifier: true, "app", "GetCollection"));
+    }
+
     [Fact]
     public void PermissionsKeepANonDefaultGrantor()
     {

@@ -133,6 +133,18 @@ CREATE SYNONYM app.Remote FOR OtherDb.dbo.Thing
 GO
 GRANT SELECT ON app.Customer TO app_role
 GO
+GRANT CREATE PROCEDURE TO rich_user
+GO
+GRANT ALTER ON SCHEMA::app TO rich_user
+GO
+EXECUTE AS USER = 'rich_user'
+EXEC ('CREATE PROCEDURE NoSchema AS SELECT 1 AS One')
+REVERT
+GO
+CREATE PROCEDURE app.OldName AS SELECT 2 AS Two
+GO
+EXEC sp_rename 'app.OldName', 'NewName'
+GO
 GRANT UPDATE ON app.Customer (Name) TO app_role
 GO
 DENY DELETE ON app.Customer TO rich_user
