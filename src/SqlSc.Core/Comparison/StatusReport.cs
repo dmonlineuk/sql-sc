@@ -1,5 +1,6 @@
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Modeling;
+using SqlSc.Core.Scripting;
 
 namespace SqlSc.Core.Comparison;
 
@@ -39,4 +40,5 @@ public sealed record StatusReport(
     IReadOnlyList<LoadIssue> LoadIssues,
     IReadOnlyList<ObjectChange> Changes,
     ChangeLog ChangeLog,
-    IReadOnlyDictionary<string, TimeSpan> Timings);
+    IReadOnlyDictionary<string, TimeSpan> Timings,
+    DatabaseModelInfo DatabaseModel);

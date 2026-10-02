@@ -32,6 +32,7 @@ var modeOption = new Option<DatabaseMode>("--mode") { Description = "shared (one
 var removeOption = new Option<bool>("--remove") { Description = "Remove the folder's link." };
 var optionalFolderArgument = new Argument<DirectoryInfo?>("folder") { Description = "Working folder. Defaults to the current folder.", Arity = ArgumentArity.ZeroOrOne };
 var noChangedByOption = new Option<bool>("--no-changed-by") { Description = "Skip reading the default trace." };
+var fullExtractOption = new Option<bool>("--full-extract") { Description = "Read the whole database with DacFx instead of scripting only tracked objects from the catalog." };
 
 var load = new Command("load", "Load a working folder into a schema model and report any problems.")
 {
@@ -58,7 +59,7 @@ load.SetAction(result =>
 
 var status = new Command("status", "Show objects that differ between the database and the working folder.")
 {
-    folderArgument, connectionOption, noChangedByOption, jsonOption,
+    folderArgument, connectionOption, noChangedByOption, fullExtractOption, jsonOption,
 };
 status.SetAction(result =>
 {
@@ -70,7 +71,11 @@ status.SetAction(result =>
     }
 
     var folder = WorkingFolder.Open(folderPath);
-    var report = StatusService.GetStatus(folder, connection, includeChangedBy: !result.GetValue(noChangedByOption));
+    var report = StatusService.GetStatus(
+        folder,
+        connection,
+        includeChangedBy: !result.GetValue(noChangedByOption),
+        fullExtract: result.GetValue(fullExtractOption));
 
     if (result.GetValue(jsonOption))
     {
@@ -84,6 +89,7 @@ status.SetAction(result =>
         Console.WriteLine($"Filter: {report.FilterPath}");
     }
 
+    Console.WriteLine($"Database model: {report.DatabaseModel.Describe()}");
     WriteIssues(report.LoadIssues);
     if (!report.ChangeLog.Available && !result.GetValue(noChangedByOption))
     {

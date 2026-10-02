@@ -53,6 +53,7 @@ public class StatusTests(SqlServerFixture sql)
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
         sql.Execute(database, "ALTER PROCEDURE [Sales].[GetCustomer] @CustomerId int AS SELECT @CustomerId AS CustomerId");
         sql.Execute(database, "DROP VIEW [Sales].[ActiveCustomer]");
+        sql.WaitForDefaultTrace(database, "ActiveCustomer");
 
         var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database));
 
@@ -123,11 +124,69 @@ public class StatusTests(SqlServerFixture sql)
 
         var checks = Doctor.Run(sql.ConnectionString(database), WorkingFolder.Open(SqlServerFixture.DemoFolder));
 
-        Assert.Equal(["Working folder", "Connection", "Server", "Permissions", "Default trace", "Latency", "Catalog", "Filter", "Schema extract"], checks.Select(c => c.Name));
+        Assert.Equal(["Working folder", "Connection", "Server", "Permissions", "Default trace", "Latency", "Catalog", "Filter", "Catalog scripting", "Schema extract"], checks.Select(c => c.Name));
         Assert.All(checks, c => Assert.True(c.Result == CheckResult.Ok, $"{c.Name}: {c.Result} {c.Detail}"));
         Assert.Contains("SQL (sa)", checks[1].Detail, StringComparison.Ordinal);
         Assert.DoesNotContain(checks, c => c.Detail.Contains("Password", StringComparison.OrdinalIgnoreCase));
         Assert.StartsWith("No filter: all 5 objects", checks[7].Detail, StringComparison.Ordinal);
+        Assert.EndsWith("catalog scripting matches it", checks[^1].Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CatalogScriptingMatchesTheFullExtractOfARichDatabase()
+    {
+        var database = sql.CreateDatabaseFromScript(SqlServerFixture.RichScript);
+
+        var checks = Doctor.Run(sql.ConnectionString(database), folder: null).ToDictionary(c => c.Name);
+
+        Assert.True(checks["Catalog scripting"].Result == CheckResult.Ok, checks["Catalog scripting"].Detail);
+        Assert.True(checks["Schema extract"].Result == CheckResult.Ok, checks["Schema extract"].Detail);
+        Assert.EndsWith("catalog scripting matches it", checks["Schema extract"].Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CatalogScriptingAndFullExtractReportTheSameChanges()
+    {
+        var folder = CopyDemo();
+        File.WriteAllText(Path.Combine(folder, "Filter.scpf"), ScratchExcluded);
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "ALTER PROCEDURE [Sales].[GetCustomer] @CustomerId int AS SELECT @CustomerId AS CustomerId");
+        sql.Execute(database, "DROP VIEW [Sales].[ActiveCustomer]");
+        sql.Execute(database, "CREATE INDEX [IX_Customer_Name] ON [Sales].[Customer] ([Name])");
+        sql.Execute(database, "GRANT SELECT ON [Sales].[Customer] TO [app_reader]");
+        sql.Execute(database, "CREATE SCHEMA [scratch]");
+        sql.Execute(database, "CREATE TABLE [scratch].[Lookup] ([Id] int NOT NULL CONSTRAINT [PK_Lookup] PRIMARY KEY)");
+        sql.Execute(database, "CREATE VIEW [Sales].[UsesScratch] AS SELECT [Id] FROM [scratch].[Lookup]");
+
+        var catalog = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false);
+        var full = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false, fullExtract: true);
+
+        Assert.True(catalog.DatabaseModel.FromCatalog, catalog.DatabaseModel.Describe());
+        Assert.True(catalog.DatabaseModel.ScriptedCount > catalog.DatabaseModel.TrackedCount, catalog.DatabaseModel.Describe());
+        Assert.False(full.DatabaseModel.FromCatalog);
+        Assert.Equal(Describe(full), Describe(catalog));
+        Assert.Equal(["[Sales].[ActiveCustomer]", "[Sales].[Customer]", "[Sales].[GetCustomer]", "[Sales].[UsesScratch]"], catalog.Changes.Select(c => c.Name).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void UnsupportedFeaturesFallBackToTheFullExtract()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, """
+            CREATE TABLE [Sales].[Price]
+            (
+                [Id] int NOT NULL CONSTRAINT [PK_Price] PRIMARY KEY,
+                [ValidFrom] datetime2 GENERATED ALWAYS AS ROW START NOT NULL,
+                [ValidTo] datetime2 GENERATED ALWAYS AS ROW END NOT NULL,
+                PERIOD FOR SYSTEM_TIME ([ValidFrom], [ValidTo])
+            ) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = [Sales].[PriceHistory]))
+            """);
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false);
+
+        Assert.False(report.DatabaseModel.FromCatalog);
+        Assert.Contains(report.DatabaseModel.Unsupported, u => u.Contains("system-versioned", StringComparison.Ordinal));
+        Assert.Contains(report.Changes, c => c.Name == "[Sales].[Price]" && c.Status == ObjectStatus.New);
     }
 
     [Fact]
@@ -167,6 +226,23 @@ public class StatusTests(SqlServerFixture sql)
         Assert.Equal(CheckResult.Failed, check.Result);
         Assert.DoesNotContain("wrong", check.Detail, StringComparison.Ordinal);
     }
+
+    private const string ScratchExcluded = """
+        <?xml version="1.0" encoding="utf-8"?>
+        <NamedFilter version="1" type="SQLCompareFilter">
+          <Filter version="1" type="DifferenceFilter">
+            <Filters version="1">
+              <None version="1"><Include>False</Include><Expression>(@SCHEMA LIKE 'scratch%')</Expression></None>
+            </Filters>
+          </Filter>
+        </NamedFilter>
+        """;
+
+    private static List<string> Describe(StatusReport report) =>
+        report.Changes
+            .Select(c => $"{c.Status} {c.ObjectType} {c.Name} {c.File}: {string.Join(", ", c.Children.Select(child => $"{child.Status} {child.ObjectType} {child.Name}").Order(StringComparer.Ordinal))}")
+            .Order(StringComparer.Ordinal)
+            .ToList();
 
     private static string CopyDemo()
     {
