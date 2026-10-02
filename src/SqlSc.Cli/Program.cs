@@ -23,8 +23,10 @@ var platformOption = new Option<string?>("--platform") { Description = "Target p
 var connectionOption = new Option<string?>("--connection", "-c")
 {
     Description = "SQL Server connection string. Defaults to the SQLSC_CONNECTION environment variable, then the folder's link. "
+        + "Use -c on its own to take it from SQLSC_CONNECTION. "
         + "Supports SQL auth, Integrated Security=true and Authentication=Active Directory Default/Interactive. "
         + "SQL auth passwords can come from SQLSC_PASSWORD.",
+    Arity = ArgumentArity.ZeroOrOne,
 };
 var modeOption = new Option<DatabaseMode>("--mode") { Description = "shared (one database for the team) or dedicated (your own database).", DefaultValueFactory = _ => DatabaseMode.Shared };
 var removeOption = new Option<bool>("--remove") { Description = "Remove the folder's link." };
@@ -153,7 +155,18 @@ link.SetAction(result =>
         return 0;
     }
 
-    if (result.GetValue(connectionOption) is not { } connection)
+    var connection = result.GetValue(connectionOption);
+    if (connection is null && result.GetResult(connectionOption) is not null)
+    {
+        connection = Environment.GetEnvironmentVariable("SQLSC_CONNECTION");
+        if (string.IsNullOrWhiteSpace(connection))
+        {
+            Console.Error.WriteLine("-c was given without a connection string and SQLSC_CONNECTION is not set.");
+            return 2;
+        }
+    }
+
+    if (connection is null)
     {
         if (store.FindFor(folderPath) is { } existing)
         {
@@ -161,7 +174,7 @@ link.SetAction(result =>
             return 0;
         }
 
-        Console.Error.WriteLine($"{folderPath} is not linked. Pass --connection to link it.");
+        Console.Error.WriteLine($"{folderPath} is not linked. Pass --connection \"...\", or -c on its own to use SQLSC_CONNECTION.");
         return 1;
     }
 
