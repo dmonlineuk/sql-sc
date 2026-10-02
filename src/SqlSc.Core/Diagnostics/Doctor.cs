@@ -96,11 +96,21 @@ public static class Doctor
         var info = ServerInfo.Query(connectionString);
         using var connection = new SqlConnection(connectionString);
         connection.Open();
-        var edition = Query(connection, "SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128))", r => r.GetString(0));
+        var edition = Query(
+            connection,
+            """
+            SELECT CAST(SERVERPROPERTY('Edition') AS nvarchar(128)),
+                   CAST(DATABASEPROPERTYEX(DB_NAME(), 'Edition') AS nvarchar(128)),
+                   CAST(DATABASEPROPERTYEX(DB_NAME(), 'ServiceObjective') AS nvarchar(128))
+            """,
+            r => info.EngineEdition == 5 && !r.IsDBNull(1)
+                ? Invariant($"{r.GetString(0)} {r.GetString(1)} {(r.IsDBNull(2) ? string.Empty : r.GetString(2))}").TrimEnd()
+                : r.GetString(0));
         var detail = Invariant($"{info.ProductVersion} {edition} (engine edition {info.EngineEdition}), platform {info.Platform}");
         return info.EngineEdition switch
         {
             5 => (CheckResult.Warning, detail + "; Azure SQL Database has no default trace, so Changed by is unavailable"),
+            8 => (CheckResult.Ok, detail),
             _ when info.MajorVersion < 13 => (CheckResult.Warning, detail + "; SQL Server 2016 or later is recommended"),
             _ => (CheckResult.Ok, detail),
         };
