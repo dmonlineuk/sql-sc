@@ -4,7 +4,10 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
+using SqlSc.Core.Database;
+using SqlSc.Core.Diagnostics;
 using SqlSc.Core.Modeling;
+using SqlSc.Core.Settings;
 using SqlSc.Core.WorkingFolders;
 
 var json = new JsonSerializerOptions
@@ -19,9 +22,15 @@ var jsonOption = new Option<bool>("--json") { Description = "Write machine-reada
 var platformOption = new Option<string?>("--platform") { Description = "Target platform: 2016-2025, azure or mi. Defaults to RedGateDatabaseInfo.xml or SQL Server 2022." };
 var connectionOption = new Option<string?>("--connection", "-c")
 {
-    Description = "SQL Server connection string. Defaults to the SQLSC_CONNECTION environment variable. "
-        + "Supports SQL auth, Integrated Security=true and Authentication=Active Directory Default/Interactive.",
+    Description = "SQL Server connection string. Defaults to the SQLSC_CONNECTION environment variable, then the folder's link. "
+        + "Use -c on its own to take it from SQLSC_CONNECTION. "
+        + "Supports SQL auth, Integrated Security=true and Authentication=Active Directory Default/Interactive. "
+        + "SQL auth passwords can come from SQLSC_PASSWORD.",
+    Arity = ArgumentArity.ZeroOrOne,
 };
+var modeOption = new Option<DatabaseMode>("--mode") { Description = "shared (one database for the team) or dedicated (your own database).", DefaultValueFactory = _ => DatabaseMode.Shared };
+var removeOption = new Option<bool>("--remove") { Description = "Remove the folder's link." };
+var optionalFolderArgument = new Argument<DirectoryInfo?>("folder") { Description = "Working folder. Defaults to the current folder.", Arity = ArgumentArity.ZeroOrOne };
 var noChangedByOption = new Option<bool>("--no-changed-by") { Description = "Skip reading the default trace." };
 
 var load = new Command("load", "Load a working folder into a schema model and report any problems.")
@@ -53,13 +62,14 @@ var status = new Command("status", "Show objects that differ between the databas
 };
 status.SetAction(result =>
 {
-    var connection = ResolveConnection(result.GetValue(connectionOption));
+    var folderPath = result.GetRequiredValue(folderArgument).FullName;
+    var connection = ResolveConnection(result.GetValue(connectionOption), folderPath);
     if (connection is null)
     {
         return 2;
     }
 
-    var folder = WorkingFolder.Open(result.GetRequiredValue(folderArgument).FullName);
+    var folder = WorkingFolder.Open(folderPath);
     var report = StatusService.GetStatus(folder, connection, includeChangedBy: !result.GetValue(noChangedByOption));
 
     if (result.GetValue(jsonOption))
@@ -69,8 +79,13 @@ status.SetAction(result =>
     }
 
     Console.WriteLine(Invariant($"{report.Server}/{report.Database} ({report.Platform}) vs {folder.RootPath}"));
+    if (report.FilterPath is not null)
+    {
+        Console.WriteLine($"Filter: {report.FilterPath}");
+    }
+
     WriteIssues(report.LoadIssues);
-    if (!report.ChangeLog.Available)
+    if (!report.ChangeLog.Available && !result.GetValue(noChangedByOption))
     {
         Console.WriteLine($"Changed by: unknown ({report.ChangeLog.UnavailableReason})");
     }
@@ -84,6 +99,10 @@ status.SetAction(result =>
     {
         var who = change.LastChange is { } e ? Invariant($"{e.LoginName} {e.StartTime:yyyy-MM-dd HH:mm}") : "Unknown";
         Console.WriteLine($"  {change.Status,-9} {change.ObjectType,-24} {change.Name,-50} {who}");
+        foreach (var child in change.Children)
+        {
+            Console.WriteLine($"      {child.Status,-9} {child.ObjectType,-20} {child.Name}");
+        }
     }
 
     Console.WriteLine(string.Join(", ", report.Timings.Select(t => Invariant($"{t.Key} {t.Value.TotalSeconds:0.00}s"))));
@@ -96,7 +115,7 @@ var changes = new Command("changes", "List recent object changes recorded in the
 };
 changes.SetAction(result =>
 {
-    var connection = ResolveConnection(result.GetValue(connectionOption));
+    var connection = ResolveConnection(result.GetValue(connectionOption), Environment.CurrentDirectory);
     if (connection is null)
     {
         return 2;
@@ -122,19 +141,121 @@ changes.SetAction(result =>
     return log.Available ? 0 : 1;
 });
 
-var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes };
-return root.Parse(args).Invoke();
-
-static string? ResolveConnection(string? value)
+var link = new Command("link", "Link a working folder to a database for the current user. Without --connection, shows the current link.")
 {
-    var connection = value ?? Environment.GetEnvironmentVariable("SQLSC_CONNECTION");
+    folderArgument, connectionOption, modeOption, removeOption,
+};
+link.SetAction(result =>
+{
+    var store = LinkStore.Default;
+    var folderPath = result.GetRequiredValue(folderArgument).FullName;
+    if (result.GetValue(removeOption))
+    {
+        Console.WriteLine(store.Remove(folderPath) ? $"Removed link for {folderPath}." : $"{folderPath} is not linked.");
+        return 0;
+    }
+
+    var connection = result.GetValue(connectionOption);
+    if (connection is null && result.GetResult(connectionOption) is not null)
+    {
+        connection = Environment.GetEnvironmentVariable("SQLSC_CONNECTION");
+        if (string.IsNullOrWhiteSpace(connection))
+        {
+            Console.Error.WriteLine("-c was given without a connection string and SQLSC_CONNECTION is not set.");
+            return 2;
+        }
+    }
+
+    if (connection is null)
+    {
+        if (store.FindFor(folderPath) is { } existing)
+        {
+            Console.WriteLine($"{existing.Folder} -> {ConnectionStrings.Describe(existing.Connection)} ({existing.Mode}, {ConnectionStrings.DescribeAuthentication(existing.Connection)})");
+            return 0;
+        }
+
+        Console.Error.WriteLine($"{folderPath} is not linked. Pass --connection \"...\", or -c on its own to use SQLSC_CONNECTION.");
+        return 1;
+    }
+
+    WorkingFolder.Open(folderPath);
+    var stored = ConnectionStrings.WithoutPassword(connection, out var removed);
+    var saved = new Link(folderPath, stored, result.GetValue(modeOption));
+    store.Save(saved);
+    Console.WriteLine($"Linked {folderPath} to {ConnectionStrings.Describe(stored)} ({saved.Mode}, {ConnectionStrings.DescribeAuthentication(stored)}).");
+    Console.WriteLine($"Saved in {store.FilePath}.");
+    if (removed)
+    {
+        Console.WriteLine($"The password was not saved. Set {ConnectionStrings.PasswordVariable} before running sql-sc.");
+    }
+
+    return 0;
+});
+
+var doctor = new Command("doctor", "Check the connection, permissions, default trace and working folder. The output is safe to share.")
+{
+    optionalFolderArgument, connectionOption, jsonOption,
+};
+doctor.SetAction(result =>
+{
+    var folderPath = result.GetValue(optionalFolderArgument)?.FullName;
+    var connection = ResolveConnection(result.GetValue(connectionOption), folderPath ?? Environment.CurrentDirectory, required: false);
+    WorkingFolder? folder = null;
+    var checks = new List<DoctorCheck>();
+    if (folderPath is not null)
+    {
+        try
+        {
+            folder = WorkingFolder.Open(folderPath);
+        }
+        catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            checks.Add(new DoctorCheck("Working folder", CheckResult.Failed, ex.Message));
+        }
+    }
+
+    checks.AddRange(Doctor.Run(connection, folder));
+    var failed = checks.Any(c => c.Result == CheckResult.Failed);
+    if (result.GetValue(jsonOption))
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new { Version = typeof(Doctor).Assembly.GetName().Version?.ToString(), Os = Environment.OSVersion.ToString(), Checks = checks }, json));
+        return failed ? 1 : 0;
+    }
+
+    Console.WriteLine($"sql-sc {typeof(Doctor).Assembly.GetName().Version} on {Environment.OSVersion}, .NET {Environment.Version}");
+    foreach (var check in checks)
+    {
+        Console.WriteLine($"  [{check.Result.ToString().ToUpperInvariant(),-7}] {check.Name,-15} {check.Detail}");
+    }
+
+    return failed ? 1 : 0;
+});
+
+var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, link, doctor };
+try
+{
+    return root.Parse(args).Invoke(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
+}
+catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or Microsoft.Data.SqlClient.SqlException)
+{
+    Console.Error.WriteLine(ex.Message);
+    return 1;
+}
+
+static string? ResolveConnection(string? value, string folder, bool required = true)
+{
+    var connection = value ?? Environment.GetEnvironmentVariable("SQLSC_CONNECTION") ?? LinkStore.Default.FindFor(folder)?.Connection;
     if (string.IsNullOrWhiteSpace(connection))
     {
-        Console.Error.WriteLine("No connection string. Pass --connection or set SQLSC_CONNECTION.");
+        if (required)
+        {
+            Console.Error.WriteLine("No connection string. Run `sql-sc link <folder> --connection ...`, pass --connection or set SQLSC_CONNECTION.");
+        }
+
         return null;
     }
 
-    return connection;
+    return ConnectionStrings.WithPassword(connection, Environment.GetEnvironmentVariable(ConnectionStrings.PasswordVariable));
 }
 
 static void WriteIssues(IReadOnlyList<LoadIssue> issues)

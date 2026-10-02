@@ -1,5 +1,7 @@
+using Microsoft.Data.SqlClient;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
+using SqlSc.Core.Diagnostics;
 using SqlSc.Core.WorkingFolders;
 
 namespace SqlSc.IntegrationTests;
@@ -39,6 +41,8 @@ public class StatusTests(SqlServerFixture sql)
         Assert.Equal(Path.Combine("Stored Procedures", "Sales.GetCustomer.sql"), changes["[Sales].[GetCustomer]"].File);
         Assert.Equal(ObjectStatus.New, changes["[Sales].[Order]"].Status);
         Assert.Equal(ObjectStatus.Deleted, changes["[Sales].[ActiveCustomer]"].Status);
+        Assert.Empty(changes["[Sales].[Order]"].Children);
+        Assert.Empty(changes["[Sales].[ActiveCustomer]"].Children);
         Assert.Equal(3, report.Changes.Count(c => c.ObjectType is "Procedure" or "Table" or "View"));
     }
 
@@ -60,5 +64,92 @@ public class StatusTests(SqlServerFixture sql)
         var dropped = report.ChangeLog.Find(null, "ActiveCustomer");
         Assert.NotNull(dropped);
         Assert.Equal(ChangeKind.Deleted, dropped.Kind);
+    }
+
+    [Fact]
+    public void ChildChangesAreGroupedUnderTheirOwner()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "CREATE INDEX [IX_Customer_Name] ON [Sales].[Customer] ([Name])");
+        sql.Execute(database, "ALTER TABLE [Sales].[Customer] ADD CONSTRAINT [CK_Customer_Name] CHECK (LEN([Name]) > 0)");
+        sql.Execute(database, "EXEC sp_updateextendedproperty N'MS_Description', N'Changed', 'SCHEMA', N'Sales', 'TABLE', N'Customer'");
+        sql.Execute(database, "GRANT SELECT ON [Sales].[Customer] TO [app_reader]");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database));
+
+        var change = Assert.Single(report.Changes);
+        Assert.Equal(ObjectStatus.Modified, change.Status);
+        Assert.Equal("Table", change.ObjectType);
+        Assert.Equal("[Sales].[Customer]", change.Name);
+        Assert.Equal(Path.Combine("Tables", "Sales.Customer.sql"), change.File);
+        var children = change.Children.Select(c => (c.Status, c.ObjectType)).ToList();
+        Assert.Contains((ObjectStatus.New, "Index"), children);
+        Assert.Contains((ObjectStatus.New, "CheckConstraint"), children);
+        Assert.Contains((ObjectStatus.Modified, "ExtendedProperty"), children);
+        Assert.Contains((ObjectStatus.New, "Permission"), children);
+    }
+
+    [Fact]
+    public void FilteredObjectsAreNotReported()
+    {
+        var folder = CopyDemo();
+        File.WriteAllText(Path.Combine(folder, "Filter.scpf"), """
+            <?xml version="1.0" encoding="utf-8"?>
+            <NamedFilter version="1" type="SQLCompareFilter">
+              <Filter version="1" type="DifferenceFilter">
+                <Filters version="1">
+                  <None version="1"><Include>False</Include><Expression>(@SCHEMA LIKE 'scratch%')</Expression></None>
+                </Filters>
+              </Filter>
+            </NamedFilter>
+            """);
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "CREATE SCHEMA [scratch]");
+        sql.Execute(database, "CREATE TABLE [scratch].[Temp] ([Id] int NOT NULL CONSTRAINT [PK_Temp] PRIMARY KEY)");
+        sql.Execute(database, "CREATE TABLE [Sales].[Kept] ([Id] int NOT NULL)");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database));
+
+        Assert.Equal("Filter.scpf", report.FilterPath);
+        var change = Assert.Single(report.Changes);
+        Assert.Equal("[Sales].[Kept]", change.Name);
+    }
+
+    [Fact]
+    public void DoctorPassesAgainstSqlServer2022()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+
+        var checks = Doctor.Run(sql.ConnectionString(database), WorkingFolder.Open(SqlServerFixture.DemoFolder));
+
+        Assert.Equal(["Working folder", "Connection", "Server", "Permissions", "Default trace", "Schema extract"], checks.Select(c => c.Name));
+        Assert.All(checks, c => Assert.True(c.Result == CheckResult.Ok, $"{c.Name}: {c.Result} {c.Detail}"));
+        Assert.Contains("SQL (sa)", checks[1].Detail, StringComparison.Ordinal);
+        Assert.DoesNotContain(checks, c => c.Detail.Contains("Password", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void DoctorReportsConnectionFailures()
+    {
+        var connection = new SqlConnectionStringBuilder(sql.ConnectionString("master")) { Password = "wrong", ConnectTimeout = 5 }.ConnectionString;
+
+        var checks = Doctor.Run(connection, folder: null);
+
+        var check = Assert.Single(checks);
+        Assert.Equal(CheckResult.Failed, check.Result);
+        Assert.DoesNotContain("wrong", check.Detail, StringComparison.Ordinal);
+    }
+
+    private static string CopyDemo()
+    {
+        var target = Path.Combine(Path.GetTempPath(), "sql-sc-tests", Guid.NewGuid().ToString("N"));
+        foreach (var file in Directory.EnumerateFiles(SqlServerFixture.DemoFolder, "*", SearchOption.AllDirectories))
+        {
+            var destination = Path.Combine(target, Path.GetRelativePath(SqlServerFixture.DemoFolder, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(file, destination);
+        }
+
+        return target;
     }
 }
