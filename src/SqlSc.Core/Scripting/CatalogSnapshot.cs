@@ -141,6 +141,10 @@ internal sealed class CatalogSnapshot
     /// <summary>Database-level features the scripter does not handle, with how many of each exist.</summary>
     public required IReadOnlyList<(string Feature, int Count)> UnsupportedFeatures { get; init; }
 
+    /// <summary>Azure SQL Database (including Hyperscale) and Synapse have no server logins to look up by SID.</summary>
+    private static bool HasServerLogins(SqlConnection connection) =>
+        Read(connection, "SELECT CAST(SERVERPROPERTY('EngineEdition') AS int)", r => r.GetInt32(0)).Single() is not (5 or 6 or 11);
+
     public static CatalogSnapshot Read(SqlConnection connection) => new()
     {
         Collation = Read(connection, "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Collation') AS nvarchar(128))", r => r.GetString(0)).Single(),
@@ -257,9 +261,9 @@ internal sealed class CatalogSnapshot
             FROM sys.sequences AS sq JOIN sys.types AS t ON t.user_type_id = sq.user_type_id
             WHERE sq.is_ms_shipped = 0
             """, r => new SequenceRow(r.GetInt32(0), r.GetString(1), r.GetByte(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6), r.GetBoolean(7), r.GetBoolean(8), r.IsDBNull(9) ? null : r.GetInt32(9))),
-        Principals = Read(connection, """
+        Principals = Read(connection, $"""
             SELECT p.principal_id, p.name, RTRIM(p.type), p.owning_principal_id, p.default_schema_name, p.authentication_type,
-                   SUSER_SNAME(p.sid), p.is_fixed_role
+                   {(HasServerLogins(connection) ? "SUSER_SNAME(p.sid)" : "NULL")}, p.is_fixed_role
             FROM sys.database_principals AS p
             """, r => new PrincipalRow(r.GetInt32(0), r.GetString(1), r.GetString(2), r.IsDBNull(3) ? null : r.GetInt32(3), NullableString(r, 4), r.GetInt32(5), NullableString(r, 6), r.GetBoolean(7))),
         RoleMembers = Read(connection, "SELECT role_principal_id, member_principal_id FROM sys.database_role_members", r => (r.GetInt32(0), r.GetInt32(1))),

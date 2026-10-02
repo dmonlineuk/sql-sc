@@ -83,10 +83,15 @@ public static class DatabaseModelLoader
     {
         var stopwatch = Stopwatch.StartNew();
         CatalogSnapshot snapshot;
-        using (var connection = new SqlConnection(connectionString))
+        try
         {
+            using var connection = new SqlConnection(connectionString);
             connection.Open();
             snapshot = CatalogSnapshot.Read(connection);
+        }
+        catch (SqlException ex)
+        {
+            return (null, new DatabaseModelInfo(false, 0, 0, ["reading the catalog failed: " + ex.Message], stopwatch.Elapsed));
         }
 
         var names = referencedNames.ToHashSet();
