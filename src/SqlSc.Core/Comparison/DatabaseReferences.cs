@@ -1,4 +1,5 @@
 using Microsoft.SqlServer.Dac.Model;
+using SqlSc.Core.Modeling;
 
 namespace SqlSc.Core.Comparison;
 
@@ -26,7 +27,7 @@ public static class DatabaseReferences
     /// <summary>Objects that live outside the database or are created by SQL Server itself, so never belong in source control.</summary>
     public static bool IsInfrastructure(TSqlObject obj) =>
         ServerScopedTypes.Contains(obj.ObjectType.Name)
-        || obj.ObjectType.Name is "SqlFile" or "DatabaseOptions"
+        || obj.ObjectType.Name is "SqlFile" or "DatabaseOptions" or "MasterKey"
         || (obj.ObjectType.Name == "Route" && obj.Name.Parts is ["AutoCreatedLocal"]);
 
     public static BorrowedObjects AddMissing(TSqlModel folderModel, TSqlModel databaseModel)
@@ -62,6 +63,7 @@ public static class DatabaseReferences
             }
         }
 
+        SystemDatabase.AddMissingMasterKey(folderModel);
         return new BorrowedObjects(objects, count);
     }
 

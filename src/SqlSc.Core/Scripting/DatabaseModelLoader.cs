@@ -84,6 +84,7 @@ public static class DatabaseModelLoader
             IgnorePermissions = false,
         });
         SystemDatabase.AddMissingLogins(model);
+        SystemDatabase.AddMissingMasterKey(model);
         ColumnNamedAliases.Apply(model);
         return (model, BrokenObjects.RemoveUntracked(model, filter));
     }
@@ -201,6 +202,7 @@ public static class DatabaseModelLoader
             }
         }
 
+        SystemDatabase.AddMissingMasterKey(model);
         foreach (var error in model.GetModelErrors().Where(e => e.Severity == ModelErrorSeverity.Error))
         {
             problems.Add(FormattableString.Invariant($"{error.SourceName}: {error.Prefix}{error.ErrorCode} {error.Message}"));

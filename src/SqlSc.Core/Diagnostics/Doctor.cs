@@ -270,8 +270,8 @@ public static partial class Doctor
     }
 
     /// <summary>
-    /// DacFx lists one error per line after its first line. Names the objects with errors, so it's clear what stops a
-    /// model being saved.
+    /// DacFx lists one error per line after its first line. Gives the first error of each object (up to
+    /// <see cref="ErrorObjectsShown"/>), so it's clear what stops a model being saved.
     /// </summary>
     internal static string DescribeErrors(string message)
     {
@@ -281,17 +281,20 @@ public static partial class Doctor
             return lines.FirstOrDefault() ?? string.Empty;
         }
 
-        var elements = lines.Skip(1)
-            .Select(l => ErrorElement().Match(l))
+        var objects = lines.Skip(1)
+            .Select(l => ErrorLine().Match(l))
             .Where(m => m.Success)
-            .Select(m => m.Groups[1].Value)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .GroupBy(m => m.Groups["element"].Value, StringComparer.OrdinalIgnoreCase)
+            .Select(g => Invariant($"{g.Key} {g.First().Groups["code"].Value}{(g.First().Groups["message"].Success ? ": " + g.First().Groups["message"].Value : string.Empty)}"))
             .ToList();
-        return Invariant($"{lines[0].TrimEnd(':')}: {lines.Length - 1} errors in {elements.Count} objects ({string.Join(", ", elements.Take(10))}{(elements.Count > 10 ? ", ..." : string.Empty)}); first: {lines[1]}");
+        var more = objects.Count > ErrorObjectsShown ? Invariant($"; and {objects.Count - ErrorObjectsShown} more") : string.Empty;
+        return Invariant($"{lines[0].TrimEnd(':')}: {lines.Length - 1} errors in {objects.Count} objects: {string.Join("; ", objects.Take(ErrorObjectsShown))}{more}");
     }
 
-    [GeneratedRegex(@"Error validating element (\[.*?\](?:\.\[.*?\])*)(?::|$)")]
-    private static partial Regex ErrorElement();
+    private const int ErrorObjectsShown = 10;
+
+    [GeneratedRegex(@"^Error (?<code>SQL\d+): Error validating element (?<element>\[.*?\](?:\.\[.*?\])*)(?::\s*(?<message>.*))?$")]
+    private static partial Regex ErrorLine();
 
     private static T Query<T>(SqlConnection connection, string sql, Func<SqlDataReader, T> read)
     {

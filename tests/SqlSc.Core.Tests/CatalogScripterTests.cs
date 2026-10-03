@@ -143,7 +143,8 @@ public class CatalogScripterTests
                 new PrincipalRow(5, "app_login_user", "S", null, null, 1, "app_login", false),
                 new PrincipalRow(6, "contained_user", "S", null, null, 2, null, false),
             ],
-            credentials: [new CredentialRow(1, "blob", "SHARED ACCESS SIGNATURE")]);
+            credentials: [new CredentialRow(1, "blob", "SHARED ACCESS SIGNATURE")],
+            dataSources: [new DataSourceRow(1, "files", "https://example.blob.core.windows.net/files", "BLOB_STORAGE", null, null, 1)]);
 
         var units = new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Units;
 
@@ -154,6 +155,16 @@ public class CatalogScripterTests
         Assert.Equal(2, passwords.Count);
         Assert.Single(passwords.Select(p => p[(p.IndexOf("PASSWORD", StringComparison.Ordinal) + 12)..].Trim('\'')).Distinct());
         Assert.DoesNotContain(units, u => u.Script.Contains("placeholder", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void CredentialsNoDataSourceUsesAreLeftOutLikeTheFullExtract()
+    {
+        var catalog = Snapshot(objects: [], credentials: [new CredentialRow(1, "unused", "SHARED ACCESS SIGNATURE")]);
+
+        var units = new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Units;
+
+        Assert.DoesNotContain(units, u => u.Source == "credential:unused");
     }
 
     [Fact]
@@ -232,6 +243,7 @@ public class CatalogScripterTests
         IReadOnlyList<PrincipalRow>? principals = null,
         IReadOnlyList<PermissionRow>? permissions = null,
         IReadOnlyList<CredentialRow>? credentials = null,
+        IReadOnlyList<DataSourceRow>? dataSources = null,
         IReadOnlyList<(string, int)>? unsupportedFeatures = null) => new()
         {
             Collation = Collation,
@@ -254,7 +266,7 @@ public class CatalogScripterTests
             RoleMembers = [],
             Permissions = permissions ?? [],
             ExtendedProperties = [],
-            DataSources = [],
+            DataSources = dataSources ?? [],
             Credentials = credentials ?? [],
             ExternalTables = [],
             Dependencies = dependencies ?? [],

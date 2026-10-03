@@ -55,6 +55,19 @@ public static class SystemDatabase
         }
     }
 
+    /// <summary>
+    /// DacFx won't save a database scoped credential without a master key, and its extract never includes the master key,
+    /// so a model with credentials gets one (passwordless, which is enough for modelling; never reported).
+    /// </summary>
+    public static void AddMissingMasterKey(TSqlModel model)
+    {
+        if (model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.DatabaseCredential).Any()
+            && !model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.MasterKey).Any())
+        {
+            model.AddOrUpdateObjects("CREATE MASTER KEY", "masterkey:", new TSqlObjectOptions());
+        }
+    }
+
     internal static string MasterPath(SqlServerVersion platform) =>
         (platform == SqlServerVersion.SqlAzure ? AzureMaster : SqlServerMaster).Value;
 

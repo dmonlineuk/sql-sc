@@ -183,3 +183,9 @@ CREATE FUNCTION app.CheckDigits (@No varchar(10)) RETURNS TABLE AS RETURN (
     SELECT COUNT(1) AS Digits FROM num WHERE SUBSTRING(@No, num.n, 1) LIKE '[0-9]'
 )
 GO
+DECLARE @secret nvarchar(100) = CONVERT(nvarchar(36), NEWID()) + N'Aa1!'
+EXEC (N'CREATE MASTER KEY ENCRYPTION BY PASSWORD = ''' + @secret + N'''')
+EXEC (N'CREATE DATABASE SCOPED CREDENTIAL [Rich Credential] WITH IDENTITY = ''SHARED ACCESS SIGNATURE'', SECRET = ''' + @secret + N'''')
+GO
+CREATE EXTERNAL DATA SOURCE [Rich Blobs] WITH (TYPE = BLOB_STORAGE, LOCATION = 'https://example.blob.core.windows.net/rich', CREDENTIAL = [Rich Credential])
+GO

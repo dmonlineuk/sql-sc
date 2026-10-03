@@ -33,6 +33,7 @@ public static class FolderModelLoader
             LoadFile(model, file, folder.ReadScript(file), issues);
         }
 
+        SystemDatabase.AddMissingMasterKey(model);
         var unlocated = model.Validate();
         var located = model.GetModelErrors().ToList();
         foreach (var error in located)

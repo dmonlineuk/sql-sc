@@ -33,6 +33,29 @@ public sealed class SystemDatabaseTests : IDisposable
         Assert.True(File.Exists(path));
     }
 
+    [Theory]
+    [InlineData(SqlServerVersion.Sql160)]
+    [InlineData(SqlServerVersion.SqlAzure)]
+    public void CredentialsWithoutAMasterKeyGetOne(SqlServerVersion platform)
+    {
+        using var model = SystemDatabase.CreateModel(platform, new TSqlModelOptions());
+        model.AddOrUpdateObjects("CREATE DATABASE SCOPED CREDENTIAL [Blob Reader] WITH IDENTITY = 'SHARED ACCESS SIGNATURE'", "a.sql", new TSqlObjectOptions());
+        SystemDatabase.AddMissingMasterKey(model);
+        SystemDatabase.AddMissingMasterKey(model);
+
+        Assert.Single(model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.MasterKey));
+        DacPackageExtensions.BuildPackage(Path.Combine(directory, "model.dacpac"), model, new PackageMetadata { Name = "test" });
+    }
+
+    [Fact]
+    public void ModelsWithoutCredentialsGetNoMasterKey()
+    {
+        using var model = SystemDatabase.CreateModel(SqlServerVersion.SqlAzure, new TSqlModelOptions());
+        SystemDatabase.AddMissingMasterKey(model);
+
+        Assert.Empty(model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.MasterKey));
+    }
+
     [Fact]
     public void UsersWithoutTheirLoginGetOne()
     {

@@ -107,7 +107,6 @@ internal sealed class CatalogScripter
         }
 
         seeds.AddRange(catalog.DataSources.Where(d => filter.Includes("ExternalDataSource", [d.Name])).Select(d => new Node('d', d.Id)));
-        seeds.AddRange(catalog.Credentials.Select(c => new Node('c', c.Id)));
         var tracked = seeds.Count;
         seeds.AddRange(Resolve(extraNames));
 

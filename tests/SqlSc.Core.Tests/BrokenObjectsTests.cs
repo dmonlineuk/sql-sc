@@ -57,13 +57,16 @@ public class BrokenObjectsTests
         const string message = "Cannot save package to file. The model has build blocking errors:\n"
             + "Error SQL71501: Error validating element [test].[V]: View: [test].[V] has an unresolved reference to object [test].[T].\n"
             + "Error SQL71501: Error validating element [test].[V].[Id]: Computed Column: [test].[V].[Id] contains an unresolved reference to an object.\n"
-            + "Error SQL71501: Error validating element [num].[n]: Computed Column: [num].[n] has an unresolved reference to object ::[n].\n";
+            + "Error SQL71501: Error validating element [test].[V]: View: [test].[V] has an unresolved reference to object [test].[U].\n"
+            + "Error SQL71589: Error validating element [NE_Credential]: Master Key must be created before a database scoped credential\n";
 
         var detail = Doctor.DescribeErrors(message);
 
         Assert.Equal(
-            "Cannot save package to file. The model has build blocking errors: 3 errors in 3 objects ([test].[V], [test].[V].[Id], [num].[n]); "
-            + "first: Error SQL71501: Error validating element [test].[V]: View: [test].[V] has an unresolved reference to object [test].[T].",
+            "Cannot save package to file. The model has build blocking errors: 4 errors in 3 objects: "
+            + "[test].[V] SQL71501: View: [test].[V] has an unresolved reference to object [test].[T].; "
+            + "[test].[V].[Id] SQL71501: Computed Column: [test].[V].[Id] contains an unresolved reference to an object.; "
+            + "[NE_Credential] SQL71589: Master Key must be created before a database scoped credential",
             detail);
     }
 }
