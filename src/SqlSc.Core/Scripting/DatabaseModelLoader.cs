@@ -14,15 +14,21 @@ public sealed record DatabaseModelInfo(
     int TrackedCount,
     int ScriptedCount,
     IReadOnlyList<string> Unsupported,
-    TimeSpan Elapsed)
+    TimeSpan Elapsed,
+    IReadOnlyList<string>? LeftOut = null)
 {
     public string Describe()
     {
         var reasons = Unsupported.Count == 0 ? string.Empty : $" (catalog scripting unsupported: {string.Join("; ", Unsupported.Take(5))}{(Unsupported.Count > 5 ? $"; {Unsupported.Count - 5} more" : string.Empty)})";
         return FromCatalog
             ? FormattableString.Invariant($"catalog scripting: {TrackedCount} tracked objects, {ScriptedCount - TrackedCount} dependencies, {Elapsed.TotalSeconds:0.00}s")
-            : FormattableString.Invariant($"full DacFx extract, {Elapsed.TotalSeconds:0.00}s{reasons}");
+            : FormattableString.Invariant($"full DacFx extract, {Elapsed.TotalSeconds:0.00}s{reasons}{DescribeLeftOut(LeftOut)}");
     }
+
+    internal static string DescribeLeftOut(IReadOnlyList<string>? leftOut) =>
+        leftOut is not { Count: > 0 }
+            ? string.Empty
+            : FormattableString.Invariant($"; left out {leftOut.Count} untracked objects with unresolved references: {string.Join(", ", leftOut.Take(5))}{(leftOut.Count > 5 ? ", ..." : string.Empty)}");
 }
 
 public sealed class DatabaseModel(TSqlModel model, DatabaseModelInfo info) : IDisposable
@@ -64,11 +70,12 @@ public static class DatabaseModelLoader
             unsupported = info.Unsupported;
         }
 
-        var full = LoadFull(connectionString);
-        return new DatabaseModel(full, new DatabaseModelInfo(false, 0, 0, unsupported, stopwatch.Elapsed));
+        var (full, leftOut) = LoadFull(connectionString, filter);
+        return new DatabaseModel(full, new DatabaseModelInfo(false, 0, 0, unsupported, stopwatch.Elapsed, leftOut));
     }
 
-    public static TSqlModel LoadFull(string connectionString)
+    /// <summary>DacFx's full extract, without untracked objects that stop it being saved (see <see cref="BrokenObjects"/>).</summary>
+    public static (TSqlModel Model, IReadOnlyList<string> LeftOut) LoadFull(string connectionString, ObjectFilter filter)
     {
         var server = ServerInfo.Query(connectionString);
         var model = SystemDatabase.LoadFromDatabase(connectionString, server.DatabaseName, server.Platform, new DacExtractOptions
@@ -77,7 +84,7 @@ public static class DatabaseModelLoader
             IgnorePermissions = false,
         });
         SystemDatabase.AddMissingLogins(model);
-        return model;
+        return (model, BrokenObjects.RemoveUntracked(model, filter));
     }
 
     /// <summary>Scripts tracked objects from the catalog; returns a null model, with the reasons, if that isn't possible.</summary>

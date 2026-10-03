@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Dac;
 using Microsoft.SqlServer.Dac.Model;
@@ -27,7 +28,7 @@ public sealed record DoctorCheck(string Name, CheckResult Result, string Detail)
 /// Checks everything sql-sc needs from a server, database and working folder, and reports it in a form that is
 /// safe to share (no connection strings or passwords).
 /// </summary>
-public static class Doctor
+public static partial class Doctor
 {
     public static IReadOnlyList<DoctorCheck> Run(string? connectionString, WorkingFolder? folder, bool extract = true)
     {
@@ -104,7 +105,7 @@ public static class Doctor
         catch (Exception ex) when (ex is SqlException or InvalidOperationException or IOException or InvalidDataException
             or UnauthorizedAccessException or DacModelException or DacServicesException or FormatException)
         {
-            return new DoctorCheck(name, CheckResult.Failed, ex.Message.Split('\n')[0].Trim());
+            return new DoctorCheck(name, CheckResult.Failed, ex is DacServicesException ? DescribeErrors(ex.Message) : ex.Message.Split('\n')[0].Trim());
         }
     }
 
@@ -247,7 +248,8 @@ public static class Doctor
     private static (CheckResult, string) CheckExtract(string connectionString, TSqlModel? scripted, ObjectFilter filter)
     {
         var stopwatch = Stopwatch.StartNew();
-        using var model = DatabaseModelLoader.LoadFull(connectionString);
+        var (model, leftOut) = DatabaseModelLoader.LoadFull(connectionString, filter);
+        using var disposeModel = model;
         var elapsed = stopwatch.Elapsed;
         var objects = model.GetObjects(DacQueryScopes.UserDefined).ToList();
         var largest = objects.GroupBy(o => o.ObjectType.Name, StringComparer.Ordinal)
@@ -255,7 +257,7 @@ public static class Doctor
             .OrderByDescending(g => g.Count)
             .ThenBy(g => g.Key, StringComparer.Ordinal)
             .Take(6);
-        var detail = Invariant($"{objects.Count} objects in {elapsed.TotalSeconds:0.00}s ({Top(largest)})");
+        var detail = Invariant($"{objects.Count} objects in {elapsed.TotalSeconds:0.00}s ({Top(largest)})") + DatabaseModelInfo.DescribeLeftOut(leftOut);
         if (scripted is null)
         {
             return (CheckResult.Ok, detail);
@@ -266,6 +268,30 @@ public static class Doctor
             ? (CheckResult.Ok, detail + "; catalog scripting matches it")
             : (CheckResult.Warning, detail + Invariant($"; catalog scripting differs in {differences.Count} places: {string.Join("; ", differences.Take(10))}"));
     }
+
+    /// <summary>
+    /// DacFx lists one error per line after its first line. Names the objects with errors, so it's clear what stops a
+    /// model being saved.
+    /// </summary>
+    internal static string DescribeErrors(string message)
+    {
+        var lines = message.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length <= 1)
+        {
+            return lines.FirstOrDefault() ?? string.Empty;
+        }
+
+        var elements = lines.Skip(1)
+            .Select(l => ErrorElement().Match(l))
+            .Where(m => m.Success)
+            .Select(m => m.Groups[1].Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return Invariant($"{lines[0].TrimEnd(':')}: {lines.Length - 1} errors in {elements.Count} objects ({string.Join(", ", elements.Take(10))}{(elements.Count > 10 ? ", ..." : string.Empty)}); first: {lines[1]}");
+    }
+
+    [GeneratedRegex(@"Error validating element (\[.*?\](?:\.\[.*?\])*)(?::|$)")]
+    private static partial Regex ErrorElement();
 
     private static T Query<T>(SqlConnection connection, string sql, Func<SqlDataReader, T> read)
     {

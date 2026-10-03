@@ -182,6 +182,28 @@ public class StatusTests(SqlServerFixture sql)
     }
 
     [Fact]
+    public void FullExtractLeavesOutUntrackedObjectsWithUnresolvedReferences()
+    {
+        var folder = CopyDemo();
+        File.WriteAllText(Path.Combine(folder, "Filter.scpf"), ScratchExcluded);
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "CREATE SCHEMA [scratch]");
+        sql.Execute(database, "CREATE TABLE [scratch].[Dropped] ([Id] int NOT NULL)");
+        sql.Execute(database, "CREATE VIEW [scratch].[OverDropped] AS SELECT [src].[Id] FROM [scratch].[Dropped] AS [src]");
+        sql.Execute(database, "CREATE VIEW [scratch].[OnTop] AS SELECT [Id] FROM [scratch].[OverDropped]");
+        sql.Execute(database, "GRANT SELECT ON [scratch].[OverDropped] TO [app_reader]");
+        sql.Execute(database, "DROP TABLE [scratch].[Dropped]");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false, fullExtract: true);
+        var checks = Doctor.Run(sql.ConnectionString(database), WorkingFolder.Open(folder)).ToDictionary(c => c.Name);
+
+        Assert.True(report.Changes.Count == 0, string.Join(Environment.NewLine, report.Changes));
+        Assert.Contains("left out 2 untracked objects with unresolved references: [scratch].[OnTop], [scratch].[OverDropped]", report.DatabaseModel.Describe(), StringComparison.Ordinal);
+        Assert.True(checks["Schema extract"].Result == CheckResult.Ok, checks["Schema extract"].Detail);
+        Assert.EndsWith("catalog scripting matches it", checks["Schema extract"].Detail, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CatalogSummaryCountsTheDemoDatabase()
     {
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
