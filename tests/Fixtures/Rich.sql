@@ -157,6 +157,12 @@ EXEC (@view)
 GO
 EXEC sp_rename 'app.OldName', 'NewName'
 GO
+CREATE TABLE dbo.sysdiagrams (name sysname NOT NULL, principal_id int NOT NULL, diagram_id int IDENTITY PRIMARY KEY, version int NULL, definition varbinary(max) NULL, CONSTRAINT UK_principal_name UNIQUE (principal_id, name))
+GO
+CREATE PROCEDURE dbo.sp_helpdiagrams @diagramname sysname = NULL AS SELECT name FROM dbo.sysdiagrams WHERE name = @diagramname
+GO
+GRANT EXECUTE ON dbo.sp_helpdiagrams TO public
+GO
 CREATE TABLE dbo.Moved (Id int NOT NULL)
 GO
 CREATE TRIGGER dbo.trMoved ON dbo.Moved AFTER INSERT AS SET NOCOUNT ON
@@ -178,6 +184,8 @@ GO
 GRANT SELECT ON app.CustomerOrders TO public
 GO
 EXEC sp_addextendedproperty N'MS_Description', N'Customers', 'SCHEMA', N'app', 'TABLE', N'Customer'
+EXEC sp_addextendedproperty N'microsoft_database_tools_support', 1, 'SCHEMA', N'dbo', 'TABLE', N'sysdiagrams'
+EXEC sp_addextendedproperty N'microsoft_database_tools_support', 1, 'SCHEMA', N'dbo', 'PROCEDURE', N'sp_helpdiagrams'
 EXEC sp_addextendedproperty N'MS_Description', 'Varchar note', 'SCHEMA', N'app', 'TABLE', N'Customer', 'COLUMN', N'Name'
 EXEC sp_addextendedproperty N'Version', 3, 'SCHEMA', N'app', 'TABLE', N'Customer', 'CONSTRAINT', N'PK_Customer'
 EXEC sp_addextendedproperty N'MS_Description', N'Index', 'SCHEMA', N'app', 'TABLE', N'Order', 'INDEX', N'IX_Order_Customer'

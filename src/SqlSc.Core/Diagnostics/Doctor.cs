@@ -266,7 +266,48 @@ public static partial class Doctor
         var differences = StatusService.CompareModels(model, scripted, filter);
         return differences.Count == 0
             ? (CheckResult.Ok, detail + "; catalog scripting matches it")
-            : (CheckResult.Warning, detail + Invariant($"; catalog scripting differs in {differences.Count} places ({DescribeDifferenceKinds(differences)}): {string.Join("; ", differences.Take(10))}"));
+            : (CheckResult.Warning, detail + Invariant($"; catalog scripting differs in {differences.Count} places ({DescribeDifferenceKinds(differences)}): {DescribeDifferences(differences, model, scripted)}"));
+    }
+
+    private const int ModifiedShown = 5;
+
+    /// <summary>The first difference of each kind, then where the scripts of the first few modified objects differ.</summary>
+    private static string DescribeDifferences(IReadOnlyList<string> differences, TSqlModel full, TSqlModel scripted)
+    {
+        var examples = differences.GroupBy(d => string.Join(' ', d.Split(' ', 3).Take(2)), StringComparer.Ordinal).Select(g => g.First());
+        var modified = differences
+            .Select(d => d.Split(' ', 3))
+            .Where(p => p is ["Modified", _, _])
+            .Take(ModifiedShown)
+            .Select(p => Script(full, p[1], p[2]) is { } expected && Script(scripted, p[1], p[2]) is { } actual
+                ? Invariant($"{p[1]} {p[2]}: {FirstDifference(expected, actual)}")
+                : null)
+            .OfType<string>();
+        return string.Join("; ", examples.Concat(modified));
+    }
+
+    private static string? Script(TSqlModel model, string type, string name) =>
+        model.GetObjects(DacQueryScopes.UserDefined)
+            .FirstOrDefault(o => o.ObjectType.Name == type && StatusService.FormatName(o.Name) == name) is { } obj
+            && obj.TryGetScript(out var script)
+            ? script
+            : null;
+
+    /// <summary>The first line where two scripts differ, ignoring indentation and blank lines.</summary>
+    internal static string FirstDifference(string fullExtract, string catalog)
+    {
+        static string[] Lines(string s) => s.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        static string Cut(string s) => s.Length > 150 ? s[..150] + "..." : s;
+        var (a, b) = (Lines(fullExtract), Lines(catalog));
+        var i = 0;
+        while (i < a.Length && i < b.Length && a[i] == b[i])
+        {
+            i++;
+        }
+
+        return i == a.Length && i == b.Length
+            ? "scripts are the same"
+            : Invariant($"line {i + 1} is `{(i < a.Length ? Cut(a[i]) : "(end)")}` in the full extract, `{(i < b.Length ? Cut(b[i]) : "(end)")}` from the catalog");
     }
 
     /// <summary>Counts differences ("Status Type Name") by status and type, most common first.</summary>

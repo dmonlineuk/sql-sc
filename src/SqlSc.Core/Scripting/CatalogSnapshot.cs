@@ -167,6 +167,10 @@ internal sealed class CatalogSnapshot
             SELECT o.object_id, s.name, o.name, RTRIM(o.type), o.parent_object_id
             FROM sys.objects AS o JOIN sys.schemas AS s ON s.schema_id = o.schema_id
             WHERE o.is_ms_shipped = 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM sys.extended_properties AS ep
+                  WHERE ep.class = 1 AND ep.minor_id = 0 AND ep.name = N'microsoft_database_tools_support'
+                    AND ep.major_id IN (o.object_id, o.parent_object_id))
             """, r => new ObjectRow(r.GetInt32(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt32(4))),
         Tables = Read(connection, """
             SELECT t.object_id, t.temporal_type, t.is_memory_optimized, CAST(t.is_node | t.is_edge AS bit), t.lock_escalation,
