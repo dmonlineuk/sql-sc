@@ -192,6 +192,15 @@ public class CatalogScripterTests
         Assert.Equal(expected, CatalogScripter.WithName(definition, quotedIdentifier: true, "app", "GetCollection"));
     }
 
+    [Theory]
+    [InlineData("CREATE TRIGGER dbo.trT ON dbo.T AFTER INSERT AS RETURN", "CREATE TRIGGER [app].[trT] ON [app].[T] AFTER INSERT AS RETURN")]
+    [InlineData("CREATE TRIGGER trT ON T AFTER INSERT AS RETURN", "CREATE TRIGGER [app].[trT] ON [app].[T] AFTER INSERT AS RETURN")]
+    [InlineData("CREATE TRIGGER app.trT ON app.T AFTER INSERT AS RETURN", "CREATE TRIGGER app.trT ON app.T AFTER INSERT AS RETURN")]
+    public void TriggerDefinitionsNameTheirTablesActualName(string definition, string expected)
+    {
+        Assert.Equal(expected, CatalogScripter.WithName(definition, quotedIdentifier: true, "app", "trT", ("app", "T")));
+    }
+
     [Fact]
     public void PermissionsKeepANonDefaultGrantor()
     {

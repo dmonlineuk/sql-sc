@@ -153,6 +153,12 @@ EXEC (@view)
 GO
 EXEC sp_rename 'app.OldName', 'NewName'
 GO
+CREATE TABLE dbo.Moved (Id int NOT NULL)
+GO
+CREATE TRIGGER dbo.trMoved ON dbo.Moved AFTER INSERT AS SET NOCOUNT ON
+GO
+ALTER SCHEMA app TRANSFER dbo.Moved
+GO
 GRANT UPDATE ON app.Customer (Name) TO app_role
 GO
 DENY DELETE ON app.Customer TO rich_user

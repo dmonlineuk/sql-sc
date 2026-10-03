@@ -52,46 +52,7 @@ public static class ColumnNamedAliases
     }
 
     /// <summary>Rewrites modules in a model loaded from a .dacpac, where each module has a source of its own.</summary>
-    public static void Apply(TSqlModel model)
-    {
-        var topLevel = model.GetObjects(DacQueryScopes.UserDefined).ToList();
-        var perSource = topLevel
-            .Select(o => o.GetSourceInformation()?.SourceName)
-            .OfType<string>()
-            .GroupBy(s => s, StringComparer.Ordinal)
-            .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
-        foreach (var module in topLevel)
-        {
-            var options = module.ObjectType.Name switch
-            {
-                "View" => Options(module, View.QuotedIdentifierOn, View.AnsiNullsOn),
-                "Procedure" => Options(module, Procedure.QuotedIdentifierOn, Procedure.AnsiNullsOn),
-                "ScalarFunction" => Options(module, ScalarFunction.QuotedIdentifierOn, ScalarFunction.AnsiNullsOn),
-                "TableValuedFunction" => Options(module, TableValuedFunction.QuotedIdentifierOn, TableValuedFunction.AnsiNullsOn),
-                "DmlTrigger" => Options(module, DmlTrigger.QuotedIdentifierOn, DmlTrigger.AnsiNullsOn),
-                _ => null,
-            };
-            if (options is null
-                || module.GetSourceInformation()?.SourceName is not { } source
-                || perSource[source] != 1
-                || !module.TryGetScript(out var script))
-            {
-                continue;
-            }
-
-            var rewritten = Rewrite(script, options.QuotedIdentifier ?? true);
-            if (!ReferenceEquals(rewritten, script))
-            {
-                model.AddOrUpdateObjects(rewritten, source, options);
-            }
-        }
-    }
-
-    private static TSqlObjectOptions Options(TSqlObject module, ModelPropertyClass quotedIdentifier, ModelPropertyClass ansiNulls) => new()
-    {
-        QuotedIdentifier = module.GetProperty<bool?>(quotedIdentifier) ?? true,
-        AnsiNulls = module.GetProperty<bool?>(ansiNulls) ?? true,
-    };
+    public static void Apply(TSqlModel model) => ModuleScripts.Rewrite(model, (_, script, quotedIdentifier) => Rewrite(script, quotedIdentifier));
 
     private sealed class Finder : TSqlFragmentVisitor
     {

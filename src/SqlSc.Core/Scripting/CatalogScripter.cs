@@ -437,7 +437,7 @@ internal sealed class CatalogScripter
         {
             if (modules.TryGetValue(trigger.Id, out var module) && module.Definition is not null)
             {
-                var definition = WithName(module.Definition, module.QuotedIdentifier, trigger.Schema, trigger.Name);
+                var definition = WithName(module.Definition, module.QuotedIdentifier, trigger.Schema, trigger.Name, (obj.Schema, obj.Name));
                 var script = module.TriggerDisabled
                     ? Invariant($"{definition}{BatchSeparator}DISABLE TRIGGER {Q(trigger.Schema, trigger.Name)} ON {name}")
                     : definition;
@@ -802,7 +802,7 @@ internal sealed class CatalogScripter
     /// A module definition with the name in its CREATE statement replaced by the object's actual schema and name.
     /// sys.sql_modules keeps the text as written, so a module created without a schema, or renamed with sp_rename, names something else.
     /// </summary>
-    internal static string WithName(string definition, bool quotedIdentifier, string schema, string name)
+    internal static string WithName(string definition, bool quotedIdentifier, string schema, string name, (string Schema, string Name)? table = null)
     {
         var fragment = new TSql170Parser(quotedIdentifier).Parse(new StringReader(definition), out var errors);
         if (errors.Count > 0 || fragment is not TSqlScript { Batches: [{ Statements: [var statement, ..] }, ..] })
@@ -818,13 +818,29 @@ internal sealed class CatalogScripter
             TriggerStatementBody trigger => trigger.Name,
             _ => null,
         };
-        if (target is null || (target.SchemaIdentifier?.Value == schema && target.BaseIdentifier?.Value == name && target.DatabaseIdentifier is null))
+        var replacements = new List<(SchemaObjectName Name, string Text)>();
+        if (target is not null && !Names(target, schema, name))
         {
-            return definition;
+            replacements.Add((target, Q(schema, name)));
         }
 
-        return string.Concat(definition.AsSpan(0, target.StartOffset), Q(schema, name), definition.AsSpan(target.StartOffset + target.FragmentLength));
+        if (table is var (tableSchema, tableName)
+            && statement is TriggerStatementBody { TriggerObject: { TriggerScope: TriggerScope.Normal, Name: { } on } }
+            && !Names(on, tableSchema, tableName))
+        {
+            replacements.Add((on, Q(tableSchema, tableName)));
+        }
+
+        foreach (var (old, text) in replacements.OrderByDescending(r => r.Name.StartOffset))
+        {
+            definition = string.Concat(definition.AsSpan(0, old.StartOffset), text, definition.AsSpan(old.StartOffset + old.FragmentLength));
+        }
+
+        return definition;
     }
+
+    private static bool Names(SchemaObjectName name, string schema, string objectName) =>
+        name.SchemaIdentifier?.Value == schema && name.BaseIdentifier?.Value == objectName && name.DatabaseIdentifier is null;
 
     internal static string Q(string name) => "[" + name.Replace("]", "]]", StringComparison.Ordinal) + "]";
 

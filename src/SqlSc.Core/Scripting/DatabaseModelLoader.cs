@@ -85,8 +85,41 @@ public static class DatabaseModelLoader
         });
         SystemDatabase.AddMissingLogins(model);
         SystemDatabase.AddMissingMasterKey(model);
+        NameTriggerTables(model, connectionString);
         ColumnNamedAliases.Apply(model);
         return (model, BrokenObjects.RemoveUntracked(model, filter));
+    }
+
+    /// <summary>
+    /// A trigger's stored definition keeps the table name it was created with, so after <c>ALTER SCHEMA ... TRANSFER</c> or
+    /// <c>sp_rename</c> its <c>ON</c> clause names a table that doesn't exist, and DacFx can't save the model.
+    /// </summary>
+    private static void NameTriggerTables(TSqlModel model, string connectionString)
+    {
+        var tables = new Dictionary<string, (string Schema, string Name)>(StringComparer.OrdinalIgnoreCase);
+        using (var connection = new SqlConnection(connectionString))
+        {
+            connection.Open();
+            using var command = new SqlCommand(
+                """
+                SELECT SCHEMA_NAME(o.schema_id), o.name, SCHEMA_NAME(p.schema_id), p.name
+                FROM sys.triggers AS t
+                JOIN sys.objects AS o ON o.object_id = t.object_id
+                JOIN sys.objects AS p ON p.object_id = t.parent_id
+                WHERE t.parent_class = 1
+                """,
+                connection);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                tables[CatalogScripter.Q(reader.GetString(0), reader.GetString(1))] = (reader.GetString(2), reader.GetString(3));
+            }
+        }
+
+        ModuleScripts.Rewrite(model, (module, script, quotedIdentifier) =>
+            module.ObjectType.Name == "DmlTrigger" && module.Name.Parts is [var schema, var name] && tables.TryGetValue(CatalogScripter.Q(schema, name), out var table)
+                ? CatalogScripter.WithName(script, quotedIdentifier, schema, name, table)
+                : script);
     }
 
     /// <summary>Scripts tracked objects from the catalog; returns a null model, with the reasons, if that isn't possible.</summary>
