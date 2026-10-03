@@ -7,6 +7,13 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.SqlClient" />
     <PackageReference Include="Microsoft.SqlServer.DacFx" />
+    <PackageReference Include="Microsoft.SqlServer.Dacpacs.Azure.Master" GeneratePathProperty="true" IncludeAssets="none" PrivateAssets="all" />
+    <PackageReference Include="Microsoft.SqlServer.Dacpacs.Master" GeneratePathProperty="true" IncludeAssets="none" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="$(PkgMicrosoft_SqlServer_Dacpacs_Master)/tools/master.dacpac" LogicalName="SqlSc.Core.master.dacpac" />
+    <EmbeddedResource Include="$(PkgMicrosoft_SqlServer_Dacpacs_Azure_Master)/tools/master.dacpac" LogicalName="SqlSc.Core.azure-master.dacpac" />
   </ItemGroup>
 
   <ItemGroup>

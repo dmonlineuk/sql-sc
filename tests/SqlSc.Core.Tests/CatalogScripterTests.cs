@@ -60,11 +60,39 @@ public class CatalogScripterTests
     public void UnsupportedFeaturesOnlyCountForScriptedObjects()
     {
         var catalog = Snapshot(
-            objects: [Object(1, "dbo", "Customer"), Object(2, "staging", "History")],
-            tables: [Table(1), Table(2) with { TemporalType = 2 }]);
+            objects: [Object(1, "dbo", "Customer"), Object(2, "staging", "Hot")],
+            tables: [Table(1), Table(2) with { MemoryOptimized = true }]);
 
         Assert.Empty(new CatalogScripter(catalog).Plan(StagingExcluded, []).Unsupported);
-        Assert.Equal(["table [staging].[History] (system-versioned)"], new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Unsupported);
+        Assert.Equal(["table [staging].[Hot] (memory-optimized)"], new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Unsupported);
+    }
+
+    [Fact]
+    public void ScriptsSystemVersionedTablesWithTheirHistoryTable()
+    {
+        var catalog = Snapshot(
+            objects: [Object(1, "dbo", "Price"), Object(2, "staging", "PriceHistory")],
+            tables: [Table(1) with { TemporalType = 2, HistoryTableId = 2, RetentionPeriod = 6, RetentionUnit = "MONTH" }, Table(2) with { TemporalType = 1 }],
+            columns:
+            [
+                Column(1, 1, "Id", "int"),
+                Column(1, 2, "From", "datetime2", 8) with { Precision = 27, Scale = 7, GeneratedAlways = 1, Hidden = true },
+                Column(1, 3, "To", "datetime2", 8) with { Precision = 27, Scale = 7, GeneratedAlways = 2 },
+                Column(2, 1, "Id", "int"),
+                Column(2, 2, "From", "datetime2", 8),
+                Column(2, 3, "To", "datetime2", 8),
+            ]);
+
+        var plan = new CatalogScripter(catalog).Plan(StagingExcluded, []);
+
+        Assert.Empty(plan.Unsupported);
+        Assert.Equal(2, plan.ScriptedCount);
+        var script = plan.Units.Single(u => u.Source == "o:[dbo].[Price]").Script;
+        Assert.Contains("[From] [datetime2] (7) GENERATED ALWAYS AS ROW START HIDDEN NOT NULL", script, StringComparison.Ordinal);
+        Assert.Contains("[To] [datetime2] (7) GENERATED ALWAYS AS ROW END NOT NULL", script, StringComparison.Ordinal);
+        Assert.Contains("PERIOD FOR SYSTEM_TIME ([From], [To])\n)", script, StringComparison.Ordinal);
+        Assert.Contains("WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = [staging].[PriceHistory], HISTORY_RETENTION_PERIOD = 6 MONTHS))", script, StringComparison.Ordinal);
+        Assert.DoesNotContain("GENERATED", plan.Units.Single(u => u.Source == "o:[staging].[PriceHistory]").Script, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -115,7 +143,8 @@ public class CatalogScripterTests
                 new PrincipalRow(5, "app_login_user", "S", null, null, 1, "app_login", false),
                 new PrincipalRow(6, "contained_user", "S", null, null, 2, null, false),
             ],
-            credentials: [new CredentialRow(1, "blob", "SHARED ACCESS SIGNATURE")]);
+            credentials: [new CredentialRow(1, "blob", "SHARED ACCESS SIGNATURE")],
+            dataSources: [new DataSourceRow(1, "files", "https://example.blob.core.windows.net/files", "BLOB_STORAGE", null, null, 1)]);
 
         var units = new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Units;
 
@@ -126,6 +155,16 @@ public class CatalogScripterTests
         Assert.Equal(2, passwords.Count);
         Assert.Single(passwords.Select(p => p[(p.IndexOf("PASSWORD", StringComparison.Ordinal) + 12)..].Trim('\'')).Distinct());
         Assert.DoesNotContain(units, u => u.Script.Contains("placeholder", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void CredentialsNoDataSourceUsesAreLeftOutLikeTheFullExtract()
+    {
+        var catalog = Snapshot(objects: [], credentials: [new CredentialRow(1, "unused", "SHARED ACCESS SIGNATURE")]);
+
+        var units = new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Units;
+
+        Assert.DoesNotContain(units, u => u.Source == "credential:unused");
     }
 
     [Fact]
@@ -141,6 +180,27 @@ public class CatalogScripterTests
         Assert.EndsWith("\nGO\nDISABLE TRIGGER [dbo].[trCustomer] ON [dbo].[Customer]", unit.Script, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("CREATE PROCEDURE GetCollection AS SELECT 1", "CREATE PROCEDURE [app].[GetCollection] AS SELECT 1")]
+    [InlineData("create procedure [app].[OldName];1 as select 1", "create procedure [app].[GetCollection];1 as select 1")]
+    [InlineData("/* GetCollection */\nCREATE OR ALTER FUNCTION dbo.GetCollection() RETURNS int AS BEGIN RETURN 1 END", "/* GetCollection */\nCREATE OR ALTER FUNCTION [app].[GetCollection]() RETURNS int AS BEGIN RETURN 1 END")]
+    [InlineData("CREATE VIEW GetCollection AS SELECT 1 AS X", "CREATE VIEW [app].[GetCollection] AS SELECT 1 AS X")]
+    [InlineData("CREATE TRIGGER GetCollection ON app.T AFTER INSERT AS RETURN", "CREATE TRIGGER [app].[GetCollection] ON app.T AFTER INSERT AS RETURN")]
+    [InlineData("CREATE PROCEDURE app.GetCollection AS SELECT 1", "CREATE PROCEDURE app.GetCollection AS SELECT 1")]
+    public void ModuleDefinitionsCreateTheObjectsActualName(string definition, string expected)
+    {
+        Assert.Equal(expected, CatalogScripter.WithName(definition, quotedIdentifier: true, "app", "GetCollection"));
+    }
+
+    [Theory]
+    [InlineData("CREATE TRIGGER dbo.trT ON dbo.T AFTER INSERT AS RETURN", "CREATE TRIGGER [app].[trT] ON [app].[T] AFTER INSERT AS RETURN")]
+    [InlineData("CREATE TRIGGER trT ON T AFTER INSERT AS RETURN", "CREATE TRIGGER [app].[trT] ON [app].[T] AFTER INSERT AS RETURN")]
+    [InlineData("CREATE TRIGGER app.trT ON app.T AFTER INSERT AS RETURN", "CREATE TRIGGER app.trT ON app.T AFTER INSERT AS RETURN")]
+    public void TriggerDefinitionsNameTheirTablesActualName(string definition, string expected)
+    {
+        Assert.Equal(expected, CatalogScripter.WithName(definition, quotedIdentifier: true, "app", "trT", ("app", "T")));
+    }
+
     [Fact]
     public void PermissionsKeepANonDefaultGrantor()
     {
@@ -152,6 +212,20 @@ public class CatalogScripterTests
         var lines = new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Units.Single(u => u.Source == "permissions").Script.Split('\n');
 
         Assert.Equal(["GRANT SELECT ON [dbo].[Customer] TO [reader]", "GO", "GRANT UPDATE ON [dbo].[Customer] TO [reader] WITH GRANT OPTION AS [owner]"], lines);
+    }
+
+    [Fact]
+    public void PermissionsOnSystemSchemasAreScripted()
+    {
+        var catalog = Snapshot(
+            objects: [],
+            principals: [new PrincipalRow(5, "reader", "S", null, null, 0, null, false), new PrincipalRow(16384, "db_owner", "R", null, null, 0, null, true)],
+            permissions: [new PermissionRow(3, 1, 0, 5, "SELECT", "G", null, 1), new PermissionRow(3, 16384, 0, 5, "INSERT", "D", null, 16384)],
+            systemSchemas: [new SchemaRow(1, "dbo", "dbo"), new SchemaRow(16384, "db_owner", "db_owner")]);
+
+        var lines = new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Units.Single(u => u.Source == "permissions").Script.Split('\n');
+
+        Assert.Equal(["GRANT SELECT ON SCHEMA::[dbo] TO [reader]", "GO", "DENY INSERT ON SCHEMA::[db_owner] TO [reader]"], lines);
     }
 
     [Theory]
@@ -192,10 +266,13 @@ public class CatalogScripterTests
         IReadOnlyList<PrincipalRow>? principals = null,
         IReadOnlyList<PermissionRow>? permissions = null,
         IReadOnlyList<CredentialRow>? credentials = null,
-        IReadOnlyList<(string, int)>? unsupportedFeatures = null) => new()
+        IReadOnlyList<DataSourceRow>? dataSources = null,
+        IReadOnlyList<(string, int)>? unsupportedFeatures = null,
+        IReadOnlyList<SchemaRow>? systemSchemas = null) => new()
         {
             Collation = Collation,
             Schemas = objects.Select(o => o.Schema).Distinct().Select((s, i) => new SchemaRow(5 + i, s, "dbo")).ToList(),
+            SystemSchemas = systemSchemas ?? [],
             Objects = objects,
             Tables = tables ?? objects.Where(o => o.Type == "U").Select(o => Table(o.Id)).ToList(),
             Columns = columns ?? objects.Where(o => o.Type == "U").Select(o => Column(o.Id, 1, "Id", "int")).ToList(),
@@ -214,7 +291,7 @@ public class CatalogScripterTests
             RoleMembers = [],
             Permissions = permissions ?? [],
             ExtendedProperties = [],
-            DataSources = [],
+            DataSources = dataSources ?? [],
             Credentials = credentials ?? [],
             ExternalTables = [],
             Dependencies = dependencies ?? [],

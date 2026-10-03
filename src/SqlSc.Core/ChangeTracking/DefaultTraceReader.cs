@@ -44,6 +44,8 @@ public static class DefaultTraceReader
     private const int ObjectDeleted = 47;
     private const int ObjectAltered = 164;
 
+    private const int InvalidObjectName = 208;
+
     // Auto-created statistics ('ST') are created by the engine, not by developers.
     private const int StatisticsObjectType = 21587;
 
@@ -61,6 +63,10 @@ public static class DefaultTraceReader
             }
 
             return new ChangeLog(true, null, ReadEvents(connection, RolloverBasePath(currentFile)));
+        }
+        catch (SqlException ex) when (ex.Number == InvalidObjectName)
+        {
+            return new ChangeLog(false, "This server has no default trace (Azure SQL Database).", []);
         }
         catch (SqlException ex)
         {

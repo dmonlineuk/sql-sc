@@ -2,7 +2,9 @@ using System.Diagnostics;
 using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Dac;
 using Microsoft.SqlServer.Dac.Model;
+using SqlSc.Core.Database;
 using SqlSc.Core.Filtering;
+using SqlSc.Core.Modeling;
 
 namespace SqlSc.Core.Scripting;
 
@@ -12,15 +14,21 @@ public sealed record DatabaseModelInfo(
     int TrackedCount,
     int ScriptedCount,
     IReadOnlyList<string> Unsupported,
-    TimeSpan Elapsed)
+    TimeSpan Elapsed,
+    IReadOnlyList<string>? LeftOut = null)
 {
     public string Describe()
     {
         var reasons = Unsupported.Count == 0 ? string.Empty : $" (catalog scripting unsupported: {string.Join("; ", Unsupported.Take(5))}{(Unsupported.Count > 5 ? $"; {Unsupported.Count - 5} more" : string.Empty)})";
         return FromCatalog
             ? FormattableString.Invariant($"catalog scripting: {TrackedCount} tracked objects, {ScriptedCount - TrackedCount} dependencies, {Elapsed.TotalSeconds:0.00}s")
-            : FormattableString.Invariant($"full DacFx extract, {Elapsed.TotalSeconds:0.00}s{reasons}");
+            : FormattableString.Invariant($"full DacFx extract, {Elapsed.TotalSeconds:0.00}s{reasons}{DescribeLeftOut(LeftOut)}");
     }
+
+    internal static string DescribeLeftOut(IReadOnlyList<string>? leftOut) =>
+        leftOut is not { Count: > 0 }
+            ? string.Empty
+            : FormattableString.Invariant($"; left out {leftOut.Count} untracked objects with unresolved references: {string.Join(", ", leftOut.Take(5))}{(leftOut.Count > 5 ? ", ..." : string.Empty)}");
 }
 
 public sealed class DatabaseModel(TSqlModel model, DatabaseModelInfo info) : IDisposable
@@ -62,17 +70,57 @@ public static class DatabaseModelLoader
             unsupported = info.Unsupported;
         }
 
-        var full = LoadFull(connectionString);
-        return new DatabaseModel(full, new DatabaseModelInfo(false, 0, 0, unsupported, stopwatch.Elapsed));
+        var (full, leftOut) = LoadFull(connectionString, filter);
+        return new DatabaseModel(full, new DatabaseModelInfo(false, 0, 0, unsupported, stopwatch.Elapsed, leftOut));
     }
 
-    public static TSqlModel LoadFull(string connectionString) =>
-        TSqlModel.LoadFromDatabase(connectionString, new ModelExtractOptions
+    /// <summary>DacFx's full extract, without untracked objects that stop it being saved (see <see cref="BrokenObjects"/>).</summary>
+    public static (TSqlModel Model, IReadOnlyList<string> LeftOut) LoadFull(string connectionString, ObjectFilter filter)
+    {
+        var server = ServerInfo.Query(connectionString);
+        var model = SystemDatabase.LoadFromDatabase(connectionString, server.DatabaseName, server.Platform, new DacExtractOptions
         {
-            LoadAsScriptBackedModel = true,
             ExtractReferencedServerScopedElements = true,
             IgnorePermissions = false,
         });
+        SystemDatabase.AddMissingLogins(model);
+        SystemDatabase.AddMissingMasterKey(model);
+        NameTriggerTables(model, connectionString);
+        ColumnNamedAliases.Apply(model);
+        return (model, BrokenObjects.RemoveUntracked(model, filter));
+    }
+
+    /// <summary>
+    /// A trigger's stored definition keeps the table name it was created with, so after <c>ALTER SCHEMA ... TRANSFER</c> or
+    /// <c>sp_rename</c> its <c>ON</c> clause names a table that doesn't exist, and DacFx can't save the model.
+    /// </summary>
+    private static void NameTriggerTables(TSqlModel model, string connectionString)
+    {
+        var tables = new Dictionary<string, (string Schema, string Name)>(StringComparer.OrdinalIgnoreCase);
+        using (var connection = new SqlConnection(connectionString))
+        {
+            connection.Open();
+            using var command = new SqlCommand(
+                """
+                SELECT SCHEMA_NAME(o.schema_id), o.name, SCHEMA_NAME(p.schema_id), p.name
+                FROM sys.triggers AS t
+                JOIN sys.objects AS o ON o.object_id = t.object_id
+                JOIN sys.objects AS p ON p.object_id = t.parent_id
+                WHERE t.parent_class = 1
+                """,
+                connection);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                tables[CatalogScripter.Q(reader.GetString(0), reader.GetString(1))] = (reader.GetString(2), reader.GetString(3));
+            }
+        }
+
+        ModuleScripts.Rewrite(model, (module, script, quotedIdentifier) =>
+            module.ObjectType.Name == "DmlTrigger" && module.Name.Parts is [var schema, var name] && tables.TryGetValue(CatalogScripter.Q(schema, name), out var table)
+                ? CatalogScripter.WithName(script, quotedIdentifier, schema, name, table)
+                : script);
+    }
 
     /// <summary>Scripts tracked objects from the catalog; returns a null model, with the reasons, if that isn't possible.</summary>
     public static (TSqlModel? Model, DatabaseModelInfo Info) TryLoadFromCatalog(
@@ -83,10 +131,15 @@ public static class DatabaseModelLoader
     {
         var stopwatch = Stopwatch.StartNew();
         CatalogSnapshot snapshot;
-        using (var connection = new SqlConnection(connectionString))
+        try
         {
+            using var connection = new SqlConnection(connectionString);
             connection.Open();
             snapshot = CatalogSnapshot.Read(connection);
+        }
+        catch (SqlException ex)
+        {
+            return (null, new DatabaseModelInfo(false, 0, 0, ["reading the catalog failed: " + ex.Message], stopwatch.Elapsed));
         }
 
         var names = referencedNames.ToHashSet();
@@ -159,7 +212,7 @@ public static class DatabaseModelLoader
     private static TSqlModel Build(ScriptPlan plan, SqlServerVersion platform, string collation, out List<string> problems)
     {
         problems = [];
-        var model = new TSqlModel(platform, new TSqlModelOptions { Collation = collation });
+        var model = SystemDatabase.CreateModel(platform, new TSqlModelOptions { Collation = collation });
         var batches = plan.Units
             .Where(u => u.Script.Length > 0)
             .GroupBy(u => (QuotedIdentifier: u.QuotedIdentifier ?? true, AnsiNulls: u.AnsiNulls ?? true))
@@ -169,7 +222,7 @@ public static class DatabaseModelLoader
             try
             {
                 model.AddOrUpdateObjects(
-                    string.Join("\nGO\n", units.Select(u => u.Script)),
+                    ColumnNamedAliases.Rewrite(string.Join("\nGO\n", units.Select(u => u.Script)), key.QuotedIdentifier),
                     units[0].Source,
                     new TSqlObjectOptions { QuotedIdentifier = key.QuotedIdentifier, AnsiNulls = key.AnsiNulls });
             }
@@ -182,6 +235,7 @@ public static class DatabaseModelLoader
             }
         }
 
+        SystemDatabase.AddMissingMasterKey(model);
         foreach (var error in model.GetModelErrors().Where(e => e.Severity == ModelErrorSeverity.Error))
         {
             problems.Add(FormattableString.Invariant($"{error.SourceName}: {error.Prefix}{error.ErrorCode} {error.Message}"));

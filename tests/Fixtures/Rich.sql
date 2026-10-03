@@ -77,6 +77,23 @@ CREATE TABLE dbo.Heap (A int NULL, B char(3) NULL, C nchar(4) NULL, D time(0) NU
 GO
 CREATE TABLE dbo.Untracked (Id int NOT NULL PRIMARY KEY)
 GO
+CREATE TABLE app.Price
+(
+    PriceId int NOT NULL CONSTRAINT PK_Price PRIMARY KEY,
+    Amount money NOT NULL,
+    ValidFrom datetime2 GENERATED ALWAYS AS ROW START HIDDEN NOT NULL CONSTRAINT DF_Price_ValidFrom DEFAULT (sysutcdatetime()),
+    ValidTo datetime2 GENERATED ALWAYS AS ROW END HIDDEN NOT NULL,
+    PERIOD FOR SYSTEM_TIME (ValidFrom, ValidTo)
+) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = dbo.PriceHistory, HISTORY_RETENTION_PERIOD = 6 MONTHS))
+GO
+CREATE TABLE app.Rate
+(
+    RateId int NOT NULL PRIMARY KEY,
+    SysStart datetime2(0) GENERATED ALWAYS AS ROW START NOT NULL,
+    SysEnd datetime2(0) GENERATED ALWAYS AS ROW END NOT NULL,
+    PERIOD FOR SYSTEM_TIME (SysStart, SysEnd)
+) WITH (SYSTEM_VERSIONING = ON)
+GO
 SET QUOTED_IDENTIFIER OFF
 GO
 CREATE PROCEDURE app.QuotedOff AS SELECT "literal" AS x
@@ -116,6 +133,42 @@ CREATE SYNONYM app.Remote FOR OtherDb.dbo.Thing
 GO
 GRANT SELECT ON app.Customer TO app_role
 GO
+GRANT CREATE PROCEDURE TO rich_user
+GO
+GRANT ALTER ON SCHEMA::app TO rich_user
+GO
+GRANT SELECT ON SCHEMA::dbo TO app_role
+GO
+DENY INSERT ON SCHEMA::db_datareader TO rich_user
+GO
+EXECUTE AS USER = 'rich_user'
+EXEC ('CREATE PROCEDURE NoSchema AS SELECT 1 AS One')
+REVERT
+GO
+CREATE PROCEDURE app.OldName AS SELECT 2 AS Two
+GO
+CREATE VIEW app.ColumnInfo AS
+SELECT cols.COLUMN_NAME, cols.ORDINAL_POSITION, c.column_id
+FROM INFORMATION_SCHEMA.COLUMNS AS cols
+JOIN sys.columns AS c ON c.name = cols.COLUMN_NAME
+GO
+DECLARE @view nvarchar(max) = N'CREATE VIEW app.SelfReference AS SELECT t.TABLE_NAME FROM ' + QUOTENAME(DB_NAME()) + N'.INFORMATION_SCHEMA.TABLES AS t'
+EXEC (@view)
+GO
+EXEC sp_rename 'app.OldName', 'NewName'
+GO
+CREATE TABLE dbo.sysdiagrams (name sysname NOT NULL, principal_id int NOT NULL, diagram_id int IDENTITY PRIMARY KEY, version int NULL, definition varbinary(max) NULL, CONSTRAINT UK_principal_name UNIQUE (principal_id, name))
+GO
+CREATE PROCEDURE dbo.sp_helpdiagrams @diagramname sysname = NULL AS SELECT name FROM dbo.sysdiagrams WHERE name = @diagramname
+GO
+GRANT EXECUTE ON dbo.sp_helpdiagrams TO public
+GO
+CREATE TABLE dbo.Moved (Id int NOT NULL)
+GO
+CREATE TRIGGER dbo.trMoved ON dbo.Moved AFTER INSERT AS SET NOCOUNT ON
+GO
+ALTER SCHEMA app TRANSFER dbo.Moved
+GO
 GRANT UPDATE ON app.Customer (Name) TO app_role
 GO
 DENY DELETE ON app.Customer TO rich_user
@@ -131,6 +184,8 @@ GO
 GRANT SELECT ON app.CustomerOrders TO public
 GO
 EXEC sp_addextendedproperty N'MS_Description', N'Customers', 'SCHEMA', N'app', 'TABLE', N'Customer'
+EXEC sp_addextendedproperty N'microsoft_database_tools_support', 1, 'SCHEMA', N'dbo', 'TABLE', N'sysdiagrams'
+EXEC sp_addextendedproperty N'microsoft_database_tools_support', 1, 'SCHEMA', N'dbo', 'PROCEDURE', N'sp_helpdiagrams'
 EXEC sp_addextendedproperty N'MS_Description', 'Varchar note', 'SCHEMA', N'app', 'TABLE', N'Customer', 'COLUMN', N'Name'
 EXEC sp_addextendedproperty N'Version', 3, 'SCHEMA', N'app', 'TABLE', N'Customer', 'CONSTRAINT', N'PK_Customer'
 EXEC sp_addextendedproperty N'MS_Description', N'Index', 'SCHEMA', N'app', 'TABLE', N'Order', 'INDEX', N'IX_Order_Customer'
@@ -140,4 +195,15 @@ EXEC sp_addextendedproperty N'MS_Description', N'Db'
 EXEC sp_addextendedproperty N'MS_Description', N'Type', 'SCHEMA', N'app', 'TYPE', N'Code'
 EXEC sp_addextendedproperty N'MS_Description', N'Trig', 'SCHEMA', N'app', 'TABLE', N'Customer', 'TRIGGER', N'Customer_Audit'
 EXEC sp_addextendedproperty N'MS_Description', N'View', 'SCHEMA', N'app', 'VIEW', N'CustomerOrders'
+GO
+CREATE FUNCTION app.CheckDigits (@No varchar(10)) RETURNS TABLE AS RETURN (
+    WITH num AS (SELECT n.n FROM (VALUES (1),(2),(3)) n(n))
+    SELECT COUNT(1) AS Digits FROM num WHERE SUBSTRING(@No, num.n, 1) LIKE '[0-9]'
+)
+GO
+DECLARE @secret nvarchar(100) = CONVERT(nvarchar(36), NEWID()) + N'Aa1!'
+EXEC (N'CREATE MASTER KEY ENCRYPTION BY PASSWORD = ''' + @secret + N'''')
+EXEC (N'CREATE DATABASE SCOPED CREDENTIAL [Rich Credential] WITH IDENTITY = ''SHARED ACCESS SIGNATURE'', SECRET = ''' + @secret + N'''')
+GO
+CREATE EXTERNAL DATA SOURCE [Rich Blobs] WITH (TYPE = BLOB_STORAGE, LOCATION = 'https://example.blob.core.windows.net/rich', CREDENTIAL = [Rich Credential])
 GO
