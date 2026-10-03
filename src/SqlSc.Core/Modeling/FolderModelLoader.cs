@@ -128,7 +128,7 @@ public static class FolderModelLoader
             try
             {
                 model.AddOrUpdateObjects(
-                    ColumnNamedAliases.Rewrite(string.Join("\nGO\n", group.Texts), group.QuotedIdentifier ?? true),
+                    SystemNamedConstraints.Rewrite(ColumnNamedAliases.Rewrite(string.Join("\nGO\n", group.Texts), group.QuotedIdentifier ?? true), group.QuotedIdentifier ?? true, text),
                     ScriptSource.Encode(file, group.StartLine),
                     new TSqlObjectOptions { QuotedIdentifier = group.QuotedIdentifier, AnsiNulls = group.AnsiNulls });
             }

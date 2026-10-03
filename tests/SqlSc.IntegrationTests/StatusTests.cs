@@ -64,6 +64,43 @@ public class StatusTests(SqlServerFixture sql)
     }
 
     [Fact]
+    public void SystemNamedConstraintsScriptedWithTheirNamesMatch()
+    {
+        var folder = CopyDemo();
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "CREATE TABLE [Sales].[Region] ([RegionId] int NOT NULL PRIMARY KEY, [Code] nchar(2) NOT NULL UNIQUE, [Active] bit NOT NULL DEFAULT ((1)))");
+        var names = new Dictionary<string, string>();
+        using (var connection = new SqlConnection(sql.ConnectionString(database)))
+        {
+            connection.Open();
+            using var command = new SqlCommand("SELECT type, name FROM sys.objects WHERE parent_object_id = OBJECT_ID('Sales.Region') AND is_ms_shipped = 0", connection);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                names[reader.GetString(0).Trim()] = reader.GetString(1);
+            }
+        }
+
+        File.WriteAllText(Path.Combine(folder, "Tables", "Sales.Region.sql"), $"""
+            CREATE TABLE [Sales].[Region]
+            (
+            [RegionId] [int] NOT NULL,
+            [Code] [nchar] (2) NOT NULL,
+            [Active] [bit] NOT NULL CONSTRAINT [{names["D"]}] DEFAULT ((1))
+            )
+            GO
+            ALTER TABLE [Sales].[Region] ADD CONSTRAINT [{names["PK"]}] PRIMARY KEY CLUSTERED ([RegionId])
+            GO
+            ALTER TABLE [Sales].[Region] ADD CONSTRAINT [{names["UQ"]}] UNIQUE NONCLUSTERED ([Code])
+            GO
+            """);
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false);
+
+        Assert.True(report.Changes.Count == 0, string.Join(Environment.NewLine, Describe(report)));
+    }
+
+    [Fact]
     public void ChangedByComesFromTheDefaultTrace()
     {
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
