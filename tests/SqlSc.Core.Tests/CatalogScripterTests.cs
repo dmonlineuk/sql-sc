@@ -214,6 +214,20 @@ public class CatalogScripterTests
         Assert.Equal(["GRANT SELECT ON [dbo].[Customer] TO [reader]", "GO", "GRANT UPDATE ON [dbo].[Customer] TO [reader] WITH GRANT OPTION AS [owner]"], lines);
     }
 
+    [Fact]
+    public void PermissionsOnSystemSchemasAreScripted()
+    {
+        var catalog = Snapshot(
+            objects: [],
+            principals: [new PrincipalRow(5, "reader", "S", null, null, 0, null, false), new PrincipalRow(16384, "db_owner", "R", null, null, 0, null, true)],
+            permissions: [new PermissionRow(3, 1, 0, 5, "SELECT", "G", null, 1), new PermissionRow(3, 16384, 0, 5, "INSERT", "D", null, 16384)],
+            systemSchemas: [new SchemaRow(1, "dbo", "dbo"), new SchemaRow(16384, "db_owner", "db_owner")]);
+
+        var lines = new CatalogScripter(catalog).Plan(ObjectFilter.IncludeAll, []).Units.Single(u => u.Source == "permissions").Script.Split('\n');
+
+        Assert.Equal(["GRANT SELECT ON SCHEMA::[dbo] TO [reader]", "GO", "DENY INSERT ON SCHEMA::[db_owner] TO [reader]"], lines);
+    }
+
     [Theory]
     [InlineData("nvarchar", 20, 0, 0, "[nvarchar] (10)")]
     [InlineData("nvarchar", -1, 0, 0, "[nvarchar] (max)")]
@@ -253,10 +267,12 @@ public class CatalogScripterTests
         IReadOnlyList<PermissionRow>? permissions = null,
         IReadOnlyList<CredentialRow>? credentials = null,
         IReadOnlyList<DataSourceRow>? dataSources = null,
-        IReadOnlyList<(string, int)>? unsupportedFeatures = null) => new()
+        IReadOnlyList<(string, int)>? unsupportedFeatures = null,
+        IReadOnlyList<SchemaRow>? systemSchemas = null) => new()
         {
             Collation = Collation,
             Schemas = objects.Select(o => o.Schema).Distinct().Select((s, i) => new SchemaRow(5 + i, s, "dbo")).ToList(),
+            SystemSchemas = systemSchemas ?? [],
             Objects = objects,
             Tables = tables ?? objects.Where(o => o.Type == "U").Select(o => Table(o.Id)).ToList(),
             Columns = columns ?? objects.Where(o => o.Type == "U").Select(o => Column(o.Id, 1, "Id", "int")).ToList(),

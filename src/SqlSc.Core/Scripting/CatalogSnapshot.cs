@@ -94,6 +94,9 @@ internal sealed class CatalogSnapshot
 
     public required IReadOnlyList<SchemaRow> Schemas { get; init; }
 
+    /// <summary><c>dbo</c>, <c>guest</c>, <c>sys</c>, <c>INFORMATION_SCHEMA</c> and the fixed role schemas, which can still have permissions.</summary>
+    public IReadOnlyList<SchemaRow> SystemSchemas { get; init; } = [];
+
     public required IReadOnlyList<ObjectRow> Objects { get; init; }
 
     public required IReadOnlyList<TableRow> Tables { get; init; }
@@ -154,6 +157,11 @@ internal sealed class CatalogSnapshot
             SELECT s.schema_id, s.name, p.name
             FROM sys.schemas AS s JOIN sys.database_principals AS p ON p.principal_id = s.principal_id
             WHERE s.schema_id BETWEEN 5 AND 16383
+            """, r => new SchemaRow(r.GetInt32(0), r.GetString(1), r.GetString(2))),
+        SystemSchemas = Read(connection, """
+            SELECT s.schema_id, s.name, p.name
+            FROM sys.schemas AS s JOIN sys.database_principals AS p ON p.principal_id = s.principal_id
+            WHERE s.schema_id NOT BETWEEN 5 AND 16383
             """, r => new SchemaRow(r.GetInt32(0), r.GetString(1), r.GetString(2))),
         Objects = Read(connection, """
             SELECT o.object_id, s.name, o.name, RTRIM(o.type), o.parent_object_id

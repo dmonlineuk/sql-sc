@@ -47,6 +47,7 @@ internal sealed class CatalogScripter
     private readonly Dictionary<int, TypeRow> types;
     private readonly Dictionary<int, PrincipalRow> principals;
     private readonly Dictionary<int, SchemaRow> schemasById;
+    private readonly Dictionary<int, SchemaRow> systemSchemas;
     private readonly ILookup<int, ColumnRow> columns;
     private readonly ILookup<int, IndexRow> indexes;
     private readonly ILookup<(int, int), IndexColumnRow> indexColumns;
@@ -68,6 +69,7 @@ internal sealed class CatalogScripter
         types = catalog.Types.ToDictionary(t => t.Id);
         principals = catalog.Principals.ToDictionary(p => p.Id);
         schemasById = catalog.Schemas.ToDictionary(s => s.Id);
+        systemSchemas = catalog.SystemSchemas.ToDictionary(s => s.Id);
         columns = catalog.Columns.ToLookup(c => c.ObjectId);
         indexes = catalog.Indexes.ToLookup(i => i.ObjectId);
         indexColumns = catalog.IndexColumns.ToLookup(c => (c.ObjectId, c.IndexId));
@@ -580,6 +582,9 @@ internal sealed class CatalogScripter
         return new ScriptUnit("t:" + name, Invariant($"CREATE TYPE {name} AS TABLE\n(\n{string.Join(",\n", parts)}\n)"));
     }
 
+    private SchemaRow? Schema(int id) =>
+        schemasById.TryGetValue(id, out var s) || systemSchemas.TryGetValue(id, out s) ? s : null;
+
     private IEnumerable<ScriptUnit> ScriptPermissions(HashSet<Node> scripted)
     {
         var statements = new List<string>();
@@ -595,7 +600,7 @@ internal sealed class CatalogScripter
                 0 => string.Empty,
                 1 when scripted.Contains(new Node('o', p.MajorId)) && objects.TryGetValue(p.MajorId, out var o) =>
                     Invariant($" ON {Q(o.Schema, o.Name)}{(p.Column is { } c ? Invariant($" ({Q(c)})") : string.Empty)}"),
-                3 when schemasById.TryGetValue(p.MajorId, out var s) => Invariant($" ON SCHEMA::{Q(s.Name)}"),
+                3 when Schema(p.MajorId) is { } s => Invariant($" ON SCHEMA::{Q(s.Name)}"),
                 4 when principals.TryGetValue(p.MajorId, out var pr) =>
                     Invariant($" ON {(pr.Type == "R" ? "ROLE" : pr.Type == "A" ? "APPLICATION ROLE" : "USER")}::{Q(pr.Name)}"),
                 6 when scripted.Contains(new Node('t', p.MajorId)) => Invariant($" ON TYPE::{Q(types[p.MajorId].Schema, types[p.MajorId].Name)}"),
@@ -608,7 +613,11 @@ internal sealed class CatalogScripter
             }
 
             var verb = p.State == "D" ? "DENY" : "GRANT";
-            var grantor = p.GrantorId != 1 && principals.TryGetValue(p.GrantorId, out var g) ? " AS " + Q(g.Name) : string.Empty;
+            var grantor = p.GrantorId != 1
+                && principals.TryGetValue(p.GrantorId, out var g)
+                && !(p.Class == 3 && Schema(p.MajorId)?.Owner == g.Name)
+                ? " AS " + Q(g.Name)
+                : string.Empty;
             statements.Add(Invariant($"{verb} {p.Name}{on} TO {Q(grantee.Name)}{(p.State == "W" ? " WITH GRANT OPTION" : string.Empty)}{grantor}"));
         }
 

@@ -266,8 +266,16 @@ public static partial class Doctor
         var differences = StatusService.CompareModels(model, scripted, filter);
         return differences.Count == 0
             ? (CheckResult.Ok, detail + "; catalog scripting matches it")
-            : (CheckResult.Warning, detail + Invariant($"; catalog scripting differs in {differences.Count} places: {string.Join("; ", differences.Take(10))}"));
+            : (CheckResult.Warning, detail + Invariant($"; catalog scripting differs in {differences.Count} places ({DescribeDifferenceKinds(differences)}): {string.Join("; ", differences.Take(10))}"));
     }
+
+    /// <summary>Counts differences ("Status Type Name") by status and type, most common first.</summary>
+    internal static string DescribeDifferenceKinds(IEnumerable<string> differences) =>
+        Top(differences
+            .GroupBy(d => string.Join(' ', d.Split(' ', 3).Take(2)), StringComparer.Ordinal)
+            .Select(g => (g.Key, Count: g.Count()))
+            .OrderByDescending(g => g.Count)
+            .ThenBy(g => g.Key, StringComparer.Ordinal));
 
     /// <summary>
     /// DacFx lists one error per line after its first line. Gives the first error of each object (up to
