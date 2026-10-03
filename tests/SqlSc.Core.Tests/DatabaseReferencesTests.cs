@@ -25,6 +25,24 @@ public sealed class DatabaseReferencesTests : IDisposable
         Build(folder);
     }
 
+    [Fact]
+    public void ObjectsThatDontResolveAgainstTheFolderAreLeftOut()
+    {
+        using var folder = Model("CREATE SCHEMA info", "CREATE TABLE info.Instructions (Id int NOT NULL)");
+        using var database = Model(
+            "CREATE SCHEMA info",
+            "CREATE TABLE info.Instructions (Id int NOT NULL, Isdelta bit NULL)",
+            "CREATE VIEW info.processing_report AS SELECT i.Isdelta AS is_delta FROM info.Instructions i",
+            "CREATE VIEW info.report_summary AS SELECT is_delta FROM info.processing_report",
+            "CREATE TABLE dbo.Orders (Id int NOT NULL)");
+
+        var borrowed = DatabaseReferences.AddMissing(folder, database);
+
+        Assert.Equal(["[dbo].[Orders]"], borrowed.Objects.Select(o => o.Name.ToString()));
+        Assert.DoesNotContain(folder.GetObjects(DacQueryScopes.UserDefined, ModelSchema.View), v => v.Name.Parts[0] == "info");
+        Build(folder);
+    }
+
     [Theory]
     [InlineData("CREATE USER [reader] FOR LOGIN [reader]")]
     [InlineData("CREATE USER [reader] FROM EXTERNAL PROVIDER")]

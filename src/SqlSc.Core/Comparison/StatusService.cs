@@ -228,7 +228,6 @@ public static class StatusService
             .ToList();
     }
 
-    /// <summary>The object whose script file contains <paramref name="obj"/>: e.g. a constraint's table.</summary>
     /// <summary>Names objects copied from the database that clash with one already in the folder model.</summary>
     private static string DescribeCopied(string message, BorrowedObjects borrowed)
     {
@@ -240,6 +239,7 @@ public static class StatusService
         return clashes.Count == 0 ? string.Empty : $" Copied from the database although the folder has the same name: {string.Join(", ", clashes)}.";
     }
 
+    /// <summary>The object whose script file contains <paramref name="obj"/>: e.g. a constraint's table.</summary>
     internal static TSqlObject OwnerOf(TSqlObject obj)
     {
         var current = obj;

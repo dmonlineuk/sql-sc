@@ -1,3 +1,4 @@
+using Microsoft.SqlServer.Dac;
 using Microsoft.SqlServer.Dac.Model;
 using SqlSc.Core.Modeling;
 
@@ -12,6 +13,8 @@ public sealed record BorrowedObjects(IReadOnlyList<TSqlObject> Objects, int Coun
 /// A working folder rarely builds on its own: logins, credentials, filtered-out objects and objects nobody has
 /// committed yet are referenced but not scripted. Copying every object the folder lacks from the live database
 /// makes the folder model buildable, and the copied objects are exactly the ones that are "new in the database".
+/// A copied object that doesn't resolve against the folder's version of what it uses (e.g. a view reading a column the
+/// folder's table doesn't have yet) is left out again, so the comparison reports it as new instead.
 /// </summary>
 public static class DatabaseReferences
 {
@@ -73,6 +76,18 @@ public static class DatabaseReferences
                     objects.Add(obj);
                 }
             }
+        }
+
+        if (count > 0)
+        {
+            var unresolved = folderModel.Validate()
+                .Where(m => m.MessageType == DacMessageType.Error && FolderModelLoader.UnresolvedReferenceCodes.Contains(m.Number))
+                .Select(m => m.Message)
+                .ToList();
+            var removed = BrokenObjects
+                .Remove(folderModel, IsBorrowed, o => unresolved.Any(m => m.Contains($"{o.Name}:", StringComparison.Ordinal)))
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            objects.RemoveAll(o => removed.Contains(StatusService.FormatName(o.Name)!));
         }
 
         SystemDatabase.AddMissingLogins(folderModel);

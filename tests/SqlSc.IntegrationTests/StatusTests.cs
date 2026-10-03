@@ -47,6 +47,22 @@ public class StatusTests(SqlServerFixture sql)
         Assert.Equal(3, report.Changes.Count(c => c.ObjectType is "Procedure" or "Table" or "View"));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NewObjectsUsingColumnsTheFolderLacksAreReportedAsNew(bool fullExtract)
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "ALTER TABLE [Sales].[Customer] ADD [Region] nvarchar(50) NULL");
+        sql.Execute(database, "CREATE VIEW [Sales].[CustomerRegion] AS SELECT c.Region AS region FROM [Sales].[Customer] c");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false, fullExtract: fullExtract);
+
+        var changes = report.Changes.ToDictionary(c => c.Name);
+        Assert.Equal(ObjectStatus.Modified, changes["[Sales].[Customer]"].Status);
+        Assert.Equal(ObjectStatus.New, changes["[Sales].[CustomerRegion]"].Status);
+    }
+
     [Fact]
     public void ChangedByComesFromTheDefaultTrace()
     {

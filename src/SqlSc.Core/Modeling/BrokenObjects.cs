@@ -16,18 +16,25 @@ public static class BrokenObjects
     /// </summary>
     public static IReadOnlyList<string> RemoveUntracked(TSqlModel model, ObjectFilter filter)
     {
-        bool Tracked(TSqlObject obj)
+        return Remove(model, obj =>
         {
             var owner = StatusService.OwnerOf(obj);
-            return filter.Includes(owner.ObjectType.Name, owner.Name.Parts);
-        }
+            return !filter.Includes(owner.ObjectType.Name, owner.Name.Parts);
+        }, IsBroken);
+    }
 
+    /// <summary>
+    /// Removes <paramref name="broken"/> objects, and the objects that use them, where every one of them is
+    /// <paramref name="removable"/>. Returns the names of the removed objects.
+    /// </summary>
+    internal static IReadOnlyList<string> Remove(TSqlModel model, Func<TSqlObject, bool> removable, Func<TSqlObject, bool> broken)
+    {
         var objects = model.GetObjects(DacQueryScopes.UserDefined).Where(o => o.Name.HasName).ToList();
         var remove = new Dictionary<string, TSqlObject>(StringComparer.OrdinalIgnoreCase);
-        foreach (var root in objects.Where(o => o.Name.Parts.Count >= 2 && !Tracked(o) && IsBroken(o)))
+        foreach (var root in objects.Where(o => o.Name.Parts.Count >= 2 && removable(o) && broken(o)))
         {
             var closure = Dependents(root);
-            if (closure.Values.All(o => !Tracked(o)))
+            if (closure.Values.All(removable))
             {
                 foreach (var (key, obj) in closure)
                 {
