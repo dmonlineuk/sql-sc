@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using Microsoft.Data.SqlClient;
+using Microsoft.SqlServer.Dac;
 using Microsoft.SqlServer.Dac.Model;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
@@ -101,7 +102,7 @@ public static class Doctor
             return new DoctorCheck(name, result, detail);
         }
         catch (Exception ex) when (ex is SqlException or InvalidOperationException or IOException or InvalidDataException
-            or UnauthorizedAccessException or DacModelException or FormatException)
+            or UnauthorizedAccessException or DacModelException or DacServicesException or FormatException)
         {
             return new DoctorCheck(name, CheckResult.Failed, ex.Message.Split('\n')[0].Trim());
         }

@@ -143,6 +143,14 @@ REVERT
 GO
 CREATE PROCEDURE app.OldName AS SELECT 2 AS Two
 GO
+CREATE VIEW app.ColumnInfo AS
+SELECT cols.COLUMN_NAME, cols.ORDINAL_POSITION, c.column_id
+FROM INFORMATION_SCHEMA.COLUMNS AS cols
+JOIN sys.columns AS c ON c.name = cols.COLUMN_NAME
+GO
+DECLARE @view nvarchar(max) = N'CREATE VIEW app.SelfReference AS SELECT t.TABLE_NAME FROM ' + QUOTENAME(DB_NAME()) + N'.INFORMATION_SCHEMA.TABLES AS t'
+EXEC (@view)
+GO
 EXEC sp_rename 'app.OldName', 'NewName'
 GO
 GRANT UPDATE ON app.Customer (Name) TO app_role

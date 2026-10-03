@@ -2,7 +2,9 @@ using System.Diagnostics;
 using Microsoft.Data.SqlClient;
 using Microsoft.SqlServer.Dac;
 using Microsoft.SqlServer.Dac.Model;
+using SqlSc.Core.Database;
 using SqlSc.Core.Filtering;
+using SqlSc.Core.Modeling;
 
 namespace SqlSc.Core.Scripting;
 
@@ -66,13 +68,17 @@ public static class DatabaseModelLoader
         return new DatabaseModel(full, new DatabaseModelInfo(false, 0, 0, unsupported, stopwatch.Elapsed));
     }
 
-    public static TSqlModel LoadFull(string connectionString) =>
-        TSqlModel.LoadFromDatabase(connectionString, new ModelExtractOptions
+    public static TSqlModel LoadFull(string connectionString)
+    {
+        var server = ServerInfo.Query(connectionString);
+        var model = SystemDatabase.LoadFromDatabase(connectionString, server.DatabaseName, server.Platform, new DacExtractOptions
         {
-            LoadAsScriptBackedModel = true,
             ExtractReferencedServerScopedElements = true,
             IgnorePermissions = false,
         });
+        SystemDatabase.AddMissingLogins(model);
+        return model;
+    }
 
     /// <summary>Scripts tracked objects from the catalog; returns a null model, with the reasons, if that isn't possible.</summary>
     public static (TSqlModel? Model, DatabaseModelInfo Info) TryLoadFromCatalog(
@@ -164,7 +170,7 @@ public static class DatabaseModelLoader
     private static TSqlModel Build(ScriptPlan plan, SqlServerVersion platform, string collation, out List<string> problems)
     {
         problems = [];
-        var model = new TSqlModel(platform, new TSqlModelOptions { Collation = collation });
+        var model = SystemDatabase.CreateModel(platform, new TSqlModelOptions { Collation = collation });
         var batches = plan.Units
             .Where(u => u.Script.Length > 0)
             .GroupBy(u => (QuotedIdentifier: u.QuotedIdentifier ?? true, AnsiNulls: u.AnsiNulls ?? true))

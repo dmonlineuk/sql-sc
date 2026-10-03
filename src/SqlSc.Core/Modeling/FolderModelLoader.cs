@@ -21,7 +21,7 @@ public static class FolderModelLoader
     public static FolderModel Load(WorkingFolder folder, SqlServerVersion? platform = null)
     {
         var target = platform ?? TargetPlatform.FromRedgateInfo(folder.RedgateInfo);
-        var model = new TSqlModel(target, new TSqlModelOptions
+        var model = SystemDatabase.CreateModel(target, new TSqlModelOptions
         {
             Collation = folder.RedgateInfo?.DefaultCollation,
         });
