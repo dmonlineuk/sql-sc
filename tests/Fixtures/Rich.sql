@@ -178,3 +178,8 @@ EXEC sp_addextendedproperty N'MS_Description', N'Type', 'SCHEMA', N'app', 'TYPE'
 EXEC sp_addextendedproperty N'MS_Description', N'Trig', 'SCHEMA', N'app', 'TABLE', N'Customer', 'TRIGGER', N'Customer_Audit'
 EXEC sp_addextendedproperty N'MS_Description', N'View', 'SCHEMA', N'app', 'VIEW', N'CustomerOrders'
 GO
+CREATE FUNCTION app.CheckDigits (@No varchar(10)) RETURNS TABLE AS RETURN (
+    WITH num AS (SELECT n.n FROM (VALUES (1),(2),(3)) n(n))
+    SELECT COUNT(1) AS Digits FROM num WHERE SUBSTRING(@No, num.n, 1) LIKE '[0-9]'
+)
+GO

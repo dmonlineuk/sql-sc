@@ -84,6 +84,7 @@ public static class DatabaseModelLoader
             IgnorePermissions = false,
         });
         SystemDatabase.AddMissingLogins(model);
+        ColumnNamedAliases.Apply(model);
         return (model, BrokenObjects.RemoveUntracked(model, filter));
     }
 
@@ -187,7 +188,7 @@ public static class DatabaseModelLoader
             try
             {
                 model.AddOrUpdateObjects(
-                    string.Join("\nGO\n", units.Select(u => u.Script)),
+                    ColumnNamedAliases.Rewrite(string.Join("\nGO\n", units.Select(u => u.Script)), key.QuotedIdentifier),
                     units[0].Source,
                     new TSqlObjectOptions { QuotedIdentifier = key.QuotedIdentifier, AnsiNulls = key.AnsiNulls });
             }
