@@ -27,25 +27,34 @@ public static class ColumnNamedAliases
             return script;
         }
 
-        var finder = new Finder();
-        fragment.Accept(finder);
-        if (finder.Aliases.Count == 0)
+        var renames = new List<(Identifier Identifier, string Alias)>();
+        foreach (var batch in fragment is TSqlScript { Batches: var batches } ? batches : [])
         {
-            return script;
+            var finder = new Finder();
+            batch.Accept(finder);
+            if (finder.Aliases.Count == 0)
+            {
+                continue;
+            }
+
+            var renamer = new Renamer(finder.Aliases, finder.CommonTableExpressions);
+            batch.Accept(renamer);
+            if (!renamer.Unsafe)
+            {
+                renames.AddRange(renamer.Identifiers.Select(i => (i, finder.Aliases[i.Value])));
+            }
         }
 
-        var renamer = new Renamer(finder.Aliases, finder.CommonTableExpressions);
-        fragment.Accept(renamer);
-        if (renamer.Unsafe)
+        if (renames.Count == 0)
         {
             return script;
         }
 
         var sb = new StringBuilder(script);
-        foreach (var identifier in renamer.Identifiers.DistinctBy(i => i.StartOffset).OrderByDescending(i => i.StartOffset))
+        foreach (var (identifier, alias) in renames.DistinctBy(r => r.Identifier.StartOffset).OrderByDescending(r => r.Identifier.StartOffset))
         {
             sb.Remove(identifier.StartOffset, identifier.FragmentLength)
-                .Insert(identifier.StartOffset, "[" + (finder.Aliases[identifier.Value] + Suffix).Replace("]", "]]", StringComparison.Ordinal) + "]");
+                .Insert(identifier.StartOffset, "[" + (alias + Suffix).Replace("]", "]]", StringComparison.Ordinal) + "]");
         }
 
         return sb.ToString();

@@ -4,6 +4,7 @@ using Microsoft.SqlServer.Dac.Compare;
 using Microsoft.SqlServer.Dac.Model;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Database;
+using SqlSc.Core.Diagnostics;
 using SqlSc.Core.Filtering;
 using SqlSc.Core.Modeling;
 using SqlSc.Core.Scripting;
@@ -59,8 +60,24 @@ public static class StatusService
         {
             var databasePackage = Path.Combine(workDirectory, "database.dacpac");
             var folderPackage = Path.Combine(workDirectory, "folder.dacpac");
-            DacPackageExtensions.BuildPackage(databasePackage, databaseModel, new PackageMetadata { Name = server.DatabaseName });
-            folderModel.BuildPackage(folderPackage, server.DatabaseName);
+            try
+            {
+                DacPackageExtensions.BuildPackage(databasePackage, databaseModel, new PackageMetadata { Name = server.DatabaseName });
+            }
+            catch (DacServicesException ex)
+            {
+                throw new InvalidDataException($"The database model can't be saved ({database.Info.Describe()}). {Doctor.DescribeErrors(ex.Message)}", ex);
+            }
+
+            try
+            {
+                folderModel.BuildPackage(folderPackage, server.DatabaseName);
+            }
+            catch (DacServicesException ex)
+            {
+                throw new InvalidDataException($"The folder model can't be saved. {Doctor.DescribeErrors(ex.Message)}{DescribeCopied(ex.Message, borrowed)}", ex);
+            }
+
             timings["buildPackage"] = Lap(stopwatch);
 
             var compare = folder.Settings.Compare;
@@ -212,6 +229,17 @@ public static class StatusService
     }
 
     /// <summary>The object whose script file contains <paramref name="obj"/>: e.g. a constraint's table.</summary>
+    /// <summary>Names objects copied from the database that clash with one already in the folder model.</summary>
+    private static string DescribeCopied(string message, BorrowedObjects borrowed)
+    {
+        var clashes = borrowed.Objects
+            .Select(o => (o.ObjectType.Name, Name: FormatName(o.Name)))
+            .Where(o => o.Name is not null && message.Contains($"element {o.Name}: The model already has", StringComparison.Ordinal))
+            .Select(o => $"{o.Item1} {o.Name}")
+            .ToList();
+        return clashes.Count == 0 ? string.Empty : $" Copied from the database although the folder has the same name: {string.Join(", ", clashes)}.";
+    }
+
     internal static TSqlObject OwnerOf(TSqlObject obj)
     {
         var current = obj;

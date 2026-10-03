@@ -38,6 +38,9 @@ public class ColumnNamedAliasesTests
     [InlineData(
         "WITH n AS (SELECT 1 AS a) SELECT n.a FROM n CROSS JOIN (VALUES (1)) x(n) CROSS JOIN (VALUES (2)) AS n2(n) WHERE EXISTS (SELECT n.n FROM (VALUES (3)) n(n))",
         "WITH [n~] AS (SELECT 1 AS a) SELECT [n~].a FROM [n~] CROSS JOIN (VALUES (1)) x(n) CROSS JOIN (VALUES (2)) AS n2(n) WHERE EXISTS (SELECT [n~].n FROM (VALUES (3)) [n~](n))")]
+    [InlineData(
+        "SELECT n.n FROM (VALUES (1)) n(n)\nGO\nSELECT n.x FROM dbo.T AS n",
+        "SELECT [n~].n FROM (VALUES (1)) [n~](n)\nGO\nSELECT n.x FROM dbo.T AS n")]
     public void RenamesAliasesThatMatchAColumnName(string script, string expected)
     {
         Assert.Equal(expected, ColumnNamedAliases.Rewrite(script));
