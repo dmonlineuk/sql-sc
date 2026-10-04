@@ -112,6 +112,20 @@ public class StatusTests(SqlServerFixture sql)
         Assert.Contains("in the database", difference, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void DiffShowsWhereAModifiedChildFirstDiffers()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "ALTER TABLE [Sales].[Customer] DROP CONSTRAINT [PK_Customer]; ALTER TABLE [Sales].[Customer] ADD CONSTRAINT [PK_Customer] PRIMARY KEY NONCLUSTERED ([CustomerId])");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false, includeDifferences: true);
+
+        var child = report.Changes.Single(c => c.Name == "[Sales].[Customer]").Children.Single();
+        Assert.Equal(ObjectStatus.Modified, child.Status);
+        Assert.NotNull(child.Difference);
+        Assert.Contains("NONCLUSTERED", child.Difference, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -394,6 +408,50 @@ public class StatusTests(SqlServerFixture sql)
           </Filter>
         </NamedFilter>
         """;
+
+    [Fact]
+    public void TableTypeColumnsWithTheDefaultCollationMatch()
+    {
+        var folder = CopyDemo();
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "CREATE TYPE [dbo].[ColumnList] AS TABLE ([TABLE_NAME] sysname NOT NULL, [IS_NULLABLE] varchar(3) NOT NULL)");
+        Directory.CreateDirectory(Path.Combine(folder, "Types", "User-defined Data Types"));
+        File.WriteAllText(Path.Combine(folder, "Types", "User-defined Data Types", "dbo.ColumnList.sql"), """
+            CREATE TYPE [dbo].[ColumnList] AS TABLE
+            (
+            [TABLE_NAME] [sys].[sysname] NOT NULL,
+            [IS_NULLABLE] [varchar] (3) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL
+            )
+            GO
+
+            """);
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false);
+
+        Assert.True(report.Changes.Count == 0, string.Join(Environment.NewLine, report.Changes));
+    }
+
+    [Fact]
+    public void TableVariableColumnsAreGroupedUnderTheirProcedure()
+    {
+        var folder = CopyDemo();
+        File.WriteAllText(Path.Combine(folder, "Tables", "Sales.DataControl.sql"), "CREATE TABLE [Sales].[DataControl] ([Id] uniqueidentifier NOT NULL DEFAULT (newid()), [Filename] varchar(100) NULL)\r\nGO\r\n");
+        var database = sql.CreateDatabaseFromFolder(folder);
+        File.WriteAllText(Path.Combine(folder, "Stored Procedures", "Sales.NewDataControl.sql"), """
+            CREATE PROCEDURE [Sales].[NewDataControl] @filename varchar(100)
+            AS BEGIN
+                DECLARE @ControlId TABLE (DataId uniqueidentifier NOT NULL);
+                INSERT [Sales].[DataControl] (Filename) OUTPUT inserted.Id INTO @ControlId SELECT @filename;
+                SELECT DataId FROM @ControlId;
+            END
+            GO
+
+            """);
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false);
+
+        Assert.Equal(["Deleted Procedure [Sales].[NewDataControl] Stored Procedures/Sales.NewDataControl.sql: "], Describe(report));
+    }
 
     private static List<string> Describe(StatusReport report) =>
         report.Changes

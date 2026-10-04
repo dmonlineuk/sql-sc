@@ -29,9 +29,10 @@ public static class FolderModelLoader
 
         var issues = new List<LoadIssue>();
         var files = folder.GetSchemaScripts();
+        var collation = model.CopyModelOptions().Collation;
         foreach (var file in files)
         {
-            LoadFile(model, file, folder.ReadScript(file), issues, keepConstraintNames);
+            LoadFile(model, file, folder.ReadScript(file), issues, keepConstraintNames, collation);
         }
 
         SystemDatabase.AddMissingMasterKey(model);
@@ -61,7 +62,7 @@ public static class FolderModelLoader
         return new FolderModel(model, target, files.Count, issues);
     }
 
-    private static void LoadFile(TSqlModel model, string file, string text, List<LoadIssue> issues, IReadOnlySet<string>? keepConstraintNames)
+    private static void LoadFile(TSqlModel model, string file, string text, List<LoadIssue> issues, IReadOnlySet<string>? keepConstraintNames, string? collation)
     {
         var parser = new TSql170Parser(initialQuotedIdentifiers: true);
         TSqlFragment fragment;
@@ -129,8 +130,12 @@ public static class FolderModelLoader
         {
             try
             {
+                var quoted = group.QuotedIdentifier ?? true;
                 model.AddOrUpdateObjects(
-                    SystemNamedConstraints.Rewrite(ColumnNamedAliases.Rewrite(string.Join("\nGO\n", group.Texts), group.QuotedIdentifier ?? true), group.QuotedIdentifier ?? true, text, keepConstraintNames),
+                    TableTypeCollations.Rewrite(
+                        SystemNamedConstraints.Rewrite(ColumnNamedAliases.Rewrite(string.Join("\nGO\n", group.Texts), quoted), quoted, text, keepConstraintNames),
+                        collation,
+                        quoted),
                     ScriptSource.Encode(file, group.StartLine),
                     new TSqlObjectOptions { QuotedIdentifier = group.QuotedIdentifier, AnsiNulls = group.AnsiNulls });
             }

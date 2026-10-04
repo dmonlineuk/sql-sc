@@ -16,8 +16,11 @@ public enum ObjectStatus
     Deleted,
 }
 
-/// <summary>A changed child of an object, such as a constraint, index, extended property or permission.</summary>
-public sealed record ChildChange(ObjectStatus Status, string ObjectType, string Name);
+/// <summary>
+/// A changed child of an object, such as a constraint, index, extended property or permission.
+/// <see cref="Difference"/> is where a modified child's database and folder scripts first differ, when requested.
+/// </summary>
+public sealed record ChildChange(ObjectStatus Status, string ObjectType, string Name, string? Difference = null);
 
 /// <summary>
 /// A changed object, with its changed children grouped under it as in the object's script file.

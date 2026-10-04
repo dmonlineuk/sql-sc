@@ -203,8 +203,13 @@ public static class StatusService
         ObjectFilter filter,
         ChangeLog changeLog)
     {
-        return raw
-            .Select(r => (Raw: r, Owner: OwnerOf(r.Object)))
+        var owned = raw.Select(r => (Raw: r, Owner: OwnerOf(r.Object))).ToList();
+        var owners = owned.Select(x => x.Owner).Where(o => o.Name.HasName).ToList();
+        return owned
+            .Select(x => ReferenceEquals(x.Owner, x.Raw.Object) && x.Owner.GetParent() is null
+                && owners.FirstOrDefault(o => IsPrefix(o.Name, x.Owner.Name)) is { } module
+                    ? (x.Raw, Owner: module)
+                    : x)
             .Where(x => !DatabaseReferences.IsInfrastructure(x.Owner))
             .Where(x => filter.Includes(x.Owner.ObjectType.Name, x.Owner.Name.Parts))
             .GroupBy(x => Key(x.Owner, x.Raw.Name), StringComparer.OrdinalIgnoreCase)
@@ -215,7 +220,12 @@ public static class StatusService
                 var self = g.Select(x => x.Raw).FirstOrDefault(r => Key(r.Object, r.Name) == g.Key);
                 var children = g.Select(x => x.Raw)
                     .Where(r => r != self && (self is null || self.Status == ObjectStatus.Modified || r.Status != self.Status))
-                    .Select(r => new ChildChange(r.Status, r.Object.ObjectType.Name, r.Name))
+                    .Select(r => new ChildChange(r.Status, r.Object.ObjectType.Name, r.Name, r.Difference switch
+                    {
+                        null => null,
+                        ScriptDifference.Same => SameScriptsDifference,
+                        var difference => difference,
+                    }))
                     .Distinct()
                     .OrderBy(c => c.ObjectType, StringComparer.Ordinal)
                     .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
@@ -275,6 +285,14 @@ public static class StatusService
 
         return current;
     }
+
+    /// <summary>
+    /// Whether <paramref name="obj"/>'s name starts with <paramref name="owner"/>'s, as the name of a column of a table variable
+    /// starts with its module's. DacFx gives such columns no parent or owning relationship.
+    /// </summary>
+    private static bool IsPrefix(ObjectIdentifier owner, ObjectIdentifier obj) =>
+        owner.Parts.Count >= 2 && owner.Parts.Count < obj.Parts.Count
+        && owner.Parts.Select((p, i) => string.Equals(p, obj.Parts[i], StringComparison.OrdinalIgnoreCase)).All(same => same);
 
     internal static string? FormatName(ObjectIdentifier? id) =>
         id is { HasName: true } ? string.Join('.', id.Parts.Select(p => $"[{p}]")) : null;
