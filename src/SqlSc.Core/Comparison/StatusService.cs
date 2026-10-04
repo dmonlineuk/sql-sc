@@ -29,6 +29,13 @@ public static class StatusService
 
     public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false, bool includeDifferences = false)
     {
+        using var session = Open(folder, connectionString, includeChangedBy, fullExtract, includeDifferences);
+        return session.Report;
+    }
+
+    /// <summary>Compares the database with the folder, keeping both models for callers that go on to use them.</summary>
+    internal static StatusSession Open(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false, bool includeDifferences = false)
+    {
         var timings = new Dictionary<string, TimeSpan>();
         var stopwatch = Stopwatch.StartNew();
 
@@ -36,15 +43,39 @@ public static class StatusService
         var explicitConstraintNames = ConstraintNames.ExplicitWithGeneratedStyle(connectionString);
         timings["server"] = Lap(stopwatch);
 
-        using var folderModel = FolderModelLoader.Load(folder, server.Platform, explicitConstraintNames);
-        timings["loadFolder"] = Lap(stopwatch);
+        var folderModel = FolderModelLoader.Load(folder, server.Platform, explicitConstraintNames);
+        DatabaseModel? database = null;
+        try
+        {
+            timings["loadFolder"] = Lap(stopwatch);
+            database = DatabaseModelLoader.Load(
+                connectionString,
+                server.Platform,
+                folder.Filter,
+                DatabaseModelLoader.UnresolvedNames(folderModel.Model),
+                fullExtract);
+            var report = BuildReport(folder, connectionString, server, folderModel, database, includeChangedBy, includeDifferences, timings, stopwatch);
+            return new StatusSession(folderModel, database, report);
+        }
+        catch
+        {
+            database?.Dispose();
+            folderModel.Dispose();
+            throw;
+        }
+    }
 
-        using var database = DatabaseModelLoader.Load(
-            connectionString,
-            server.Platform,
-            folder.Filter,
-            DatabaseModelLoader.UnresolvedNames(folderModel.Model),
-            fullExtract);
+    private static StatusReport BuildReport(
+        WorkingFolder folder,
+        string connectionString,
+        ServerInfo server,
+        FolderModel folderModel,
+        DatabaseModel database,
+        bool includeChangedBy,
+        bool includeDifferences,
+        Dictionary<string, TimeSpan> timings,
+        Stopwatch stopwatch)
+    {
         var databaseModel = database.Model;
         timings["loadDatabase"] = Lap(stopwatch);
 

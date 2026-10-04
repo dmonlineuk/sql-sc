@@ -58,7 +58,7 @@ public static class DatabaseReferences
         var copied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var objects = new List<TSqlObject>();
         var count = 0;
-        foreach (var obj in databaseModel.GetObjects(DacQueryScopes.UserDefined))
+        foreach (var obj in databaseModel.GetObjects(DacQueryScopes.UserDefined).OrderBy(o => o.Name.HasName ? 0 : 1))
         {
             var parent = obj.GetParent();
             var copy = obj.Name.HasName

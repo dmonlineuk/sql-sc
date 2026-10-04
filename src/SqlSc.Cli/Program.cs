@@ -6,6 +6,7 @@ using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
 using SqlSc.Core.Database;
 using SqlSc.Core.Diagnostics;
+using SqlSc.Core.Export;
 using SqlSc.Core.Modeling;
 using SqlSc.Core.Settings;
 using SqlSc.Core.WorkingFolders;
@@ -249,7 +250,63 @@ doctor.SetAction(result =>
     return failed ? 1 : 0;
 });
 
-var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, link, doctor };
+var objectsArgument = new Argument<string[]>("objects") { Description = "Objects to export, e.g. Sales.Customer or [Sales].[Customer].", Arity = ArgumentArity.ZeroOrMore };
+var allOption = new Option<bool>("--all") { Description = "Every object that differs between the database and the folder." };
+var mineOption = new Option<bool>("--mine") { Description = "Objects whose last change in the database was made by your login (needs the default trace)." };
+var messageOption = new Option<string>("--message", "-m") { Description = "Commit message.", Required = true };
+
+var export = new Command("export", "Write objects from the database into the working folder. Files of objects dropped from the database are deleted.")
+{
+    folderArgument, objectsArgument, allOption, mineOption, connectionOption, fullExtractOption, jsonOption,
+};
+export.SetAction(result =>
+{
+    if (Selection(result) is not { } selection || Connect(result) is not var (folder, connection))
+    {
+        return 2;
+    }
+
+    var exported = ExportService.Export(folder, connection, selection, result.GetValue(fullExtractOption));
+    if (result.GetValue(jsonOption))
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new { exported.Files, exported.Problems }, json));
+    }
+    else
+    {
+        WriteExport(exported);
+    }
+
+    return exported.Problems.Count > 0 ? 1 : 0;
+});
+
+var commit = new Command("commit", "Export objects, then git commit exactly their files. Nothing else that is staged or changed is committed.")
+{
+    folderArgument, objectsArgument, messageOption, allOption, mineOption, connectionOption, fullExtractOption, jsonOption,
+};
+commit.SetAction(result =>
+{
+    if (Selection(result) is not { } selection || Connect(result) is not var (folder, connection))
+    {
+        return 2;
+    }
+
+    var committed = CommitService.Commit(folder, connection, selection, result.GetRequiredValue(messageOption), result.GetValue(fullExtractOption));
+    if (result.GetValue(jsonOption))
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new { committed.Export.Files, committed.Export.Problems, committed.CommittedFiles, committed.Commit }, json));
+    }
+    else
+    {
+        WriteExport(committed.Export);
+        Console.WriteLine(committed.Commit is { } hash
+            ? Invariant($"Committed {committed.CommittedFiles.Count} file(s) as {hash}.")
+            : committed.Export.Problems.Count > 0 ? "Nothing written or committed." : "Nothing to commit.");
+    }
+
+    return committed.Export.Problems.Count > 0 ? 1 : 0;
+});
+
+var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, link, doctor, export, commit };
 try
 {
     return root.Parse(args).Invoke(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
@@ -258,6 +315,50 @@ catch (Exception ex) when (ex is IOException or InvalidDataException or Unauthor
 {
     Console.Error.WriteLine(ex.Message);
     return 1;
+}
+
+ExportSelection? Selection(ParseResult result)
+{
+    var names = result.GetValue(objectsArgument) ?? [];
+    var all = result.GetValue(allOption);
+    var mine = result.GetValue(mineOption);
+    if (all && (names.Length > 0 || mine))
+    {
+        Console.Error.WriteLine("--all can't be combined with object names or --mine.");
+        return null;
+    }
+
+    if (!all && !mine && names.Length == 0)
+    {
+        Console.Error.WriteLine("Name the objects to export, or pass --all or --mine.");
+        return null;
+    }
+
+    return new ExportSelection(names, all, mine);
+}
+
+(WorkingFolder Folder, string Connection)? Connect(ParseResult result)
+{
+    var folderPath = result.GetRequiredValue(folderArgument).FullName;
+    return ResolveConnection(result.GetValue(connectionOption), folderPath) is { } connection ? (WorkingFolder.Open(folderPath), connection) : null;
+}
+
+static void WriteExport(ExportResult exported)
+{
+    if (exported.Selected.Count == 0 && exported.Problems.Count == 0)
+    {
+        Console.WriteLine("No differences.");
+    }
+
+    foreach (var file in exported.Files)
+    {
+        Console.WriteLine($"  {file.Action,-9} {file.Path}");
+    }
+
+    foreach (var problem in exported.Problems)
+    {
+        Console.WriteLine($"  Problem: {problem}");
+    }
 }
 
 static string? ResolveConnection(string? value, string folder, bool required = true)

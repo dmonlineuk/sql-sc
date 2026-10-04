@@ -18,15 +18,7 @@ internal static class ModuleScripts
             .ToDictionary(g => g.Key, g => g.Count(), StringComparer.Ordinal);
         foreach (var module in topLevel)
         {
-            var options = module.ObjectType.Name switch
-            {
-                "View" => Options(module, View.QuotedIdentifierOn, View.AnsiNullsOn),
-                "Procedure" => Options(module, Procedure.QuotedIdentifierOn, Procedure.AnsiNullsOn),
-                "ScalarFunction" => Options(module, ScalarFunction.QuotedIdentifierOn, ScalarFunction.AnsiNullsOn),
-                "TableValuedFunction" => Options(module, TableValuedFunction.QuotedIdentifierOn, TableValuedFunction.AnsiNullsOn),
-                "DmlTrigger" => Options(module, DmlTrigger.QuotedIdentifierOn, DmlTrigger.AnsiNullsOn),
-                _ => null,
-            };
+            var options = OptionsOf(module);
             if (options is null
                 || module.GetSourceInformation()?.SourceName is not { } source
                 || perSource[source] != 1
@@ -42,6 +34,18 @@ internal static class ModuleScripts
             }
         }
     }
+
+    /// <summary>The QUOTED_IDENTIFIER and ANSI_NULLS settings a module was created with, or null if it isn't a module.</summary>
+    public static TSqlObjectOptions? OptionsOf(TSqlObject module) => module.ObjectType.Name switch
+    {
+        "View" => Options(module, View.QuotedIdentifierOn, View.AnsiNullsOn),
+        "Procedure" => Options(module, Procedure.QuotedIdentifierOn, Procedure.AnsiNullsOn),
+        "ScalarFunction" => Options(module, ScalarFunction.QuotedIdentifierOn, ScalarFunction.AnsiNullsOn),
+        "TableValuedFunction" => Options(module, TableValuedFunction.QuotedIdentifierOn, TableValuedFunction.AnsiNullsOn),
+        "DmlTrigger" => Options(module, DmlTrigger.QuotedIdentifierOn, DmlTrigger.AnsiNullsOn),
+        "DatabaseDdlTrigger" => Options(module, DatabaseDdlTrigger.QuotedIdentifierOn, DatabaseDdlTrigger.AnsiNullsOn),
+        _ => null,
+    };
 
     private static TSqlObjectOptions Options(TSqlObject module, ModelPropertyClass quotedIdentifier, ModelPropertyClass ansiNulls) => new()
     {

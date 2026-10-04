@@ -60,8 +60,26 @@ public static class ColumnNamedAliases
         return sb.ToString();
     }
 
-    /// <summary>Rewrites modules in a model loaded from a .dacpac, where each module has a source of its own.</summary>
-    public static void Apply(TSqlModel model) => ModuleScripts.Rewrite(model, (_, script, quotedIdentifier) => Rewrite(script, quotedIdentifier));
+    /// <summary>
+    /// Rewrites modules in a model loaded from a .dacpac, where each module has a source of its own. Each rewritten script is
+    /// recorded in <paramref name="originals"/> against the script it replaced.
+    /// </summary>
+    public static void Apply(TSqlModel model, IDictionary<string, string>? originals = null) =>
+        ModuleScripts.Rewrite(model, (_, script, quotedIdentifier) => Record(script, Rewrite(script, quotedIdentifier), originals));
+
+    /// <summary>Rewrites <paramref name="script"/>, recording the result in <paramref name="originals"/> if it changed.</summary>
+    public static string Rewrite(string script, bool quotedIdentifier, IDictionary<string, string>? originals) =>
+        Record(script, Rewrite(script, quotedIdentifier), originals);
+
+    private static string Record(string script, string rewritten, IDictionary<string, string>? originals)
+    {
+        if (originals is not null && !string.Equals(script, rewritten, StringComparison.Ordinal))
+        {
+            originals[rewritten.Trim()] = script.Trim();
+        }
+
+        return rewritten;
+    }
 
     private sealed class Finder : TSqlFragmentVisitor
     {
