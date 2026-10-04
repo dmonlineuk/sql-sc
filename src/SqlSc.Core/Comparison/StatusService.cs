@@ -33,9 +33,10 @@ public static class StatusService
         var stopwatch = Stopwatch.StartNew();
 
         var server = ServerInfo.Query(connectionString);
+        var explicitConstraintNames = ConstraintNames.ExplicitWithGeneratedStyle(connectionString);
         timings["server"] = Lap(stopwatch);
 
-        using var folderModel = FolderModelLoader.Load(folder, server.Platform);
+        using var folderModel = FolderModelLoader.Load(folder, server.Platform, explicitConstraintNames);
         timings["loadFolder"] = Lap(stopwatch);
 
         using var database = DatabaseModelLoader.Load(

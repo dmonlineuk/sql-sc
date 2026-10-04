@@ -8,11 +8,12 @@ namespace SqlSc.Core.Modeling;
 /// SQL Server names unnamed constraints itself (e.g. <c>PK__Customer__3213E83F9AEF8E7A</c>). Redgate scripts those names
 /// into the working folder, but DacFx models them as unnamed, as SQL Server would recreate them with different names. Removing
 /// <c>CONSTRAINT [name]</c> for system-generated names makes folder constraints match the database's. Names used anywhere
-/// else in <c>file</c> (e.g. <c>NOCHECK CONSTRAINT</c> or an extended property) are kept.
+/// else in <c>file</c> (e.g. <c>NOCHECK CONSTRAINT</c> or an extended property) or listed in <c>keep</c> (names the database
+/// gave explicitly, which DacFx keeps) are kept.
 /// </summary>
 public static partial class SystemNamedConstraints
 {
-    public static string Rewrite(string script, bool quotedIdentifier = true, string? file = null)
+    public static string Rewrite(string script, bool quotedIdentifier = true, string? file = null, IReadOnlySet<string>? keep = null)
     {
         if (!script.Contains("__", StringComparison.Ordinal))
         {
@@ -29,6 +30,7 @@ public static partial class SystemNamedConstraints
         fragment.Accept(finder);
         var removals = finder.Constraints
             .Where(c => SystemName().IsMatch(c.ConstraintIdentifier.Value)
+                && keep?.Contains(c.ConstraintIdentifier.Value) != true
                 && Occurrences(file ?? script, c.ConstraintIdentifier.Value) == 1
                 && c.ScriptTokenStream[c.FirstTokenIndex].TokenType == TSqlTokenType.Constraint)
             .Select(c => (Start: c.StartOffset, End: End(c)))

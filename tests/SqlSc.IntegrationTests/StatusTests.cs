@@ -104,6 +104,31 @@ public class StatusTests(SqlServerFixture sql)
         Assert.Equal(ObjectStatus.New, changes["[Sales].[CustomerRegion]"].Status);
     }
 
+    [Theory]
+    [InlineData("PK__Region__3213E83F9AEF8E7A", false)]
+    [InlineData("PK__Region__1111111122222222", true)]
+    public void ExplicitConstraintNamesThatLookSystemGeneratedMatch(string folderName, bool modified)
+    {
+        var folder = CopyDemo();
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "CREATE TABLE [Sales].[Region] ([RegionId] int NOT NULL CONSTRAINT [PK__Region__3213E83F9AEF8E7A] PRIMARY KEY CLUSTERED, [Active] bit NOT NULL CONSTRAINT [DF__Region__Active__42501F7D] DEFAULT ((1)))");
+        File.WriteAllText(Path.Combine(folder, "Tables", "Sales.Region.sql"), $"""
+            CREATE TABLE [Sales].[Region]
+            (
+            [RegionId] [int] NOT NULL,
+            [Active] [bit] NOT NULL CONSTRAINT [DF__Region__Active__42501F7D] DEFAULT ((1))
+            )
+            GO
+            ALTER TABLE [Sales].[Region] ADD CONSTRAINT [{folderName}] PRIMARY KEY CLUSTERED ([RegionId])
+            GO
+            """);
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false);
+
+        Assert.Equal(modified, report.Changes.Any(c => c.Name == "[Sales].[Region]"));
+        Assert.DoesNotContain(report.Changes, c => c.Name != "[Sales].[Region]");
+    }
+
     [Fact]
     public void SystemNamedConstraintsScriptedWithTheirNamesMatch()
     {

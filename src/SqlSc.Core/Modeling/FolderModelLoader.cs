@@ -18,7 +18,8 @@ public static class FolderModelLoader
     /// </summary>
     internal static readonly IReadOnlySet<int> UnresolvedReferenceCodes = new HashSet<int> { 71501, 71502, 71561, 71562 };
 
-    public static FolderModel Load(WorkingFolder folder, SqlServerVersion? platform = null)
+    /// <param name="keepConstraintNames">System-generated-style constraint names the database gave explicitly, kept in the model.</param>
+    public static FolderModel Load(WorkingFolder folder, SqlServerVersion? platform = null, IReadOnlySet<string>? keepConstraintNames = null)
     {
         var target = platform ?? TargetPlatform.FromRedgateInfo(folder.RedgateInfo);
         var model = SystemDatabase.CreateModel(target, new TSqlModelOptions
@@ -30,7 +31,7 @@ public static class FolderModelLoader
         var files = folder.GetSchemaScripts();
         foreach (var file in files)
         {
-            LoadFile(model, file, folder.ReadScript(file), issues);
+            LoadFile(model, file, folder.ReadScript(file), issues, keepConstraintNames);
         }
 
         SystemDatabase.AddMissingMasterKey(model);
@@ -60,7 +61,7 @@ public static class FolderModelLoader
         return new FolderModel(model, target, files.Count, issues);
     }
 
-    private static void LoadFile(TSqlModel model, string file, string text, List<LoadIssue> issues)
+    private static void LoadFile(TSqlModel model, string file, string text, List<LoadIssue> issues, IReadOnlySet<string>? keepConstraintNames)
     {
         var parser = new TSql170Parser(initialQuotedIdentifiers: true);
         TSqlFragment fragment;
@@ -128,7 +129,7 @@ public static class FolderModelLoader
             try
             {
                 model.AddOrUpdateObjects(
-                    SystemNamedConstraints.Rewrite(ColumnNamedAliases.Rewrite(string.Join("\nGO\n", group.Texts), group.QuotedIdentifier ?? true), group.QuotedIdentifier ?? true, text),
+                    SystemNamedConstraints.Rewrite(ColumnNamedAliases.Rewrite(string.Join("\nGO\n", group.Texts), group.QuotedIdentifier ?? true), group.QuotedIdentifier ?? true, text, keepConstraintNames),
                     ScriptSource.Encode(file, group.StartLine),
                     new TSqlObjectOptions { QuotedIdentifier = group.QuotedIdentifier, AnsiNulls = group.AnsiNulls });
             }

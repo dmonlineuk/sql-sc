@@ -52,6 +52,9 @@ public static class DatabaseReferences
             .Select(o => o.Name.ToString())
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
+        var tablesWithPrimaryKey = Targets(folderModel, ModelSchema.PrimaryKeyConstraint, PrimaryKeyConstraint.Host);
+        var columnsWithDefault = Targets(folderModel, ModelSchema.DefaultConstraint, DefaultConstraint.TargetColumn);
+
         var copied = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var objects = new List<TSqlObject>();
         var count = 0;
@@ -59,7 +62,10 @@ public static class DatabaseReferences
         {
             var parent = obj.GetParent();
             var copy = obj.Name.HasName
-                ? !inFolder.Contains(Key(obj)) && !(IsSchemaObject(obj) && schemaObjectsInFolder.Contains(obj.Name.ToString()))
+                ? !inFolder.Contains(Key(obj))
+                    && !(IsSchemaObject(obj) && schemaObjectsInFolder.Contains(obj.Name.ToString()))
+                    && !TargetsAny(obj, ModelSchema.PrimaryKeyConstraint, PrimaryKeyConstraint.Host, tablesWithPrimaryKey)
+                    && !TargetsAny(obj, ModelSchema.DefaultConstraint, DefaultConstraint.TargetColumn, columnsWithDefault)
                 : parent is { Name.HasName: true } && copied.Contains(Key(parent));
             if (!copy || !obj.TryGetScript(out var script))
             {
@@ -97,6 +103,16 @@ public static class DatabaseReferences
 
     public static bool IsBorrowed(TSqlObject? obj) =>
         obj?.GetSourceInformation()?.SourceName?.StartsWith(SourcePrefix, StringComparison.Ordinal) == true;
+
+    /// <summary>The objects that constraints of one kind in the folder apply to; a table has one primary key and a column one default.</summary>
+    private static HashSet<string> Targets(TSqlModel model, ModelTypeClass type, ModelRelationshipClass target) =>
+        model.GetObjects(DacQueryScopes.UserDefined, type)
+            .SelectMany(c => c.GetReferenced(target))
+            .Select(t => t.Name.ToString())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private static bool TargetsAny(TSqlObject obj, ModelTypeClass type, ModelRelationshipClass target, HashSet<string> targets) =>
+        obj.ObjectType == type && obj.GetReferenced(target).Any(t => targets.Contains(t.Name.ToString()));
 
     private static bool IsSchemaObject(TSqlObject obj) => obj.Name.HasName && SchemaObjectTypes.Contains(obj.ObjectType.Name);
 
