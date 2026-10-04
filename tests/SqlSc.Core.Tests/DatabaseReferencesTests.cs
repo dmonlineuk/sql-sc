@@ -43,6 +43,18 @@ public sealed class DatabaseReferencesTests : IDisposable
         Build(folder);
     }
 
+    [Fact]
+    public void ConstraintsTheFolderHasUnderAnotherNameAreNotCopied()
+    {
+        using var folder = Model("CREATE TABLE dbo.T (Id int NOT NULL DEFAULT ((0)), PRIMARY KEY CLUSTERED (Id))");
+        using var database = Model("CREATE TABLE dbo.T (Id int NOT NULL CONSTRAINT [DF__T__Id__42501F7D] DEFAULT ((0)), CONSTRAINT [PK__T__3213E83F9AEF8E7A] PRIMARY KEY CLUSTERED (Id))");
+
+        var borrowed = DatabaseReferences.AddMissing(folder, database);
+
+        Assert.Empty(borrowed.Objects);
+        Build(folder);
+    }
+
     [Theory]
     [InlineData("CREATE USER [reader] FOR LOGIN [reader]")]
     [InlineData("CREATE USER [reader] FROM EXTERNAL PROVIDER")]

@@ -115,6 +115,10 @@ status.SetAction(result =>
         foreach (var child in change.Children)
         {
             Console.WriteLine($"      {child.Status,-9} {child.ObjectType,-20} {child.Name}");
+            if (child.Difference is not null)
+            {
+                Console.WriteLine($"          First difference: {child.Difference}");
+            }
         }
     }
 

@@ -18,7 +18,8 @@ public static class FolderModelLoader
     /// </summary>
     internal static readonly IReadOnlySet<int> UnresolvedReferenceCodes = new HashSet<int> { 71501, 71502, 71561, 71562 };
 
-    public static FolderModel Load(WorkingFolder folder, SqlServerVersion? platform = null)
+    /// <param name="keepConstraintNames">System-generated-style constraint names the database gave explicitly, kept in the model.</param>
+    public static FolderModel Load(WorkingFolder folder, SqlServerVersion? platform = null, IReadOnlySet<string>? keepConstraintNames = null)
     {
         var target = platform ?? TargetPlatform.FromRedgateInfo(folder.RedgateInfo);
         var model = SystemDatabase.CreateModel(target, new TSqlModelOptions
@@ -28,9 +29,10 @@ public static class FolderModelLoader
 
         var issues = new List<LoadIssue>();
         var files = folder.GetSchemaScripts();
+        var collation = model.CopyModelOptions().Collation;
         foreach (var file in files)
         {
-            LoadFile(model, file, folder.ReadScript(file), issues);
+            LoadFile(model, file, folder.ReadScript(file), issues, keepConstraintNames, collation);
         }
 
         SystemDatabase.AddMissingMasterKey(model);
@@ -60,7 +62,7 @@ public static class FolderModelLoader
         return new FolderModel(model, target, files.Count, issues);
     }
 
-    private static void LoadFile(TSqlModel model, string file, string text, List<LoadIssue> issues)
+    private static void LoadFile(TSqlModel model, string file, string text, List<LoadIssue> issues, IReadOnlySet<string>? keepConstraintNames, string? collation)
     {
         var parser = new TSql170Parser(initialQuotedIdentifiers: true);
         TSqlFragment fragment;
@@ -79,6 +81,7 @@ public static class FolderModelLoader
             return;
         }
 
+        var goTokens = script.ScriptTokenStream.Where(t => t.TokenType == TSqlTokenType.Go).ToList();
         bool? quotedIdentifier = null;
         bool? ansiNulls = null;
         var groups = new List<BatchGroup>();
@@ -103,7 +106,7 @@ public static class FolderModelLoader
                 continue;
             }
 
-            var batchText = text.Substring(batch.StartOffset, batch.FragmentLength);
+            var (batchText, startLine) = BatchText(text, batch, goTokens);
             if (groups.Count > 0 && SupportedNames(batch) is { } names)
             {
                 var owner = names.Count > 0 && names.All(definedIn.ContainsKey) && names.Select(n => definedIn[n]).Distinct().Count() == 1
@@ -113,7 +116,7 @@ public static class FolderModelLoader
                 continue;
             }
 
-            var group = new BatchGroup(batch.StartLine, quotedIdentifier, ansiNulls, [batchText]);
+            var group = new BatchGroup(startLine, quotedIdentifier, ansiNulls, [batchText]);
             groups.Add(group);
             var collector = new DefinedNameCollector();
             batch.Accept(collector);
@@ -127,8 +130,12 @@ public static class FolderModelLoader
         {
             try
             {
+                var quoted = group.QuotedIdentifier ?? true;
                 model.AddOrUpdateObjects(
-                    SystemNamedConstraints.Rewrite(ColumnNamedAliases.Rewrite(string.Join("\nGO\n", group.Texts), group.QuotedIdentifier ?? true), group.QuotedIdentifier ?? true, text),
+                    TableTypeCollations.Rewrite(
+                        SystemNamedConstraints.Rewrite(ColumnNamedAliases.Rewrite(string.Join("\nGO\n", group.Texts), quoted), quoted, text, keepConstraintNames),
+                        collation,
+                        quoted),
                     ScriptSource.Encode(file, group.StartLine),
                     new TSqlObjectOptions { QuotedIdentifier = group.QuotedIdentifier, AnsiNulls = group.AnsiNulls });
             }
@@ -139,6 +146,22 @@ public static class FolderModelLoader
                     : [new LoadIssue(IssueSeverity.Error, file, group.StartLine, ex.Message)]);
             }
         }
+    }
+
+    /// <summary>
+    /// A batch's text from the <c>GO</c> before it to the <c>GO</c> after it, as SQL Server stores a module's definition:
+    /// comments before <c>CREATE</c> and after the last statement are part of it.
+    /// </summary>
+    private static (string Text, int StartLine) BatchText(string text, TSqlBatch batch, List<TSqlParserToken> goTokens)
+    {
+        var start = goTokens.Where(t => t.Offset + t.Text.Length <= batch.StartOffset).Select(t => t.Offset + t.Text.Length).DefaultIfEmpty(0).Max();
+        var end = goTokens.Where(t => t.Offset >= batch.StartOffset + batch.FragmentLength).Select(t => t.Offset).DefaultIfEmpty(text.Length).Min();
+        while (start < end && char.IsWhiteSpace(text[start]))
+        {
+            start++;
+        }
+
+        return (text[start..end].TrimEnd(), text.AsSpan(0, start).Count('\n') + 1);
     }
 
     /// <summary>

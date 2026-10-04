@@ -25,6 +25,14 @@ public class SystemNamedConstraintsTests
         Assert.Equal(script, SystemNamedConstraints.Rewrite(script));
 
     [Fact]
+    public void NamesTheDatabaseGaveExplicitlyAreKept()
+    {
+        const string script = "ALTER TABLE [dbo].[T] ADD CONSTRAINT [PK__T__3213E83F9AEF8E7A] PRIMARY KEY ([Id])";
+
+        Assert.Equal(script, SystemNamedConstraints.Rewrite(script, keep: new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "pk__T__3213E83F9AEF8E7A" }));
+    }
+
+    [Fact]
     public void NamesUsedElsewhereInTheFileAreKept()
     {
         const string script = "ALTER TABLE [dbo].[T] ADD CONSTRAINT [CK__T__Id__42501F7D] CHECK ([Id] > 0)";

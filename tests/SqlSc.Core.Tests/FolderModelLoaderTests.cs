@@ -51,6 +51,30 @@ public class FolderModelLoaderTests
     }
 
     [Fact]
+    public void CommentsAroundAModuleArePartOfItsDefinition()
+    {
+        var root = FixturePaths.CreateTempFolder(("Stored Procedures/dbo.P.sql", "SET QUOTED_IDENTIFIER ON\r\nGO\r\n-- Author: x\r\ncreate procedure dbo.P AS SELECT 1\r\n-- trailing\r\nGO\r\n"));
+
+        using var model = FolderModelLoader.Load(WorkingFolder.Open(root));
+
+        var procedure = model.Model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.Procedure).Single();
+        Assert.True(procedure.TryGetScript(out var script));
+        Assert.Equal("-- Author: x\r\ncreate procedure dbo.P AS SELECT 1\r\n-- trailing", script);
+    }
+
+    [Fact]
+    public void EntraUsersStayExternal()
+    {
+        var root = FixturePaths.CreateTempFolder(("Security/Users/x.sql", "CREATE USER [x] FROM EXTERNAL PROVIDER\r\nGO\r\n"));
+
+        using var model = FolderModelLoader.Load(WorkingFolder.Open(root), SqlServerVersion.SqlAzure);
+
+        Assert.Empty(model.Issues);
+        var user = model.Model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.User).Single();
+        Assert.Equal(AuthenticationType.ExternalAuthenticationProvider, user.GetProperty<AuthenticationType>(User.AuthenticationType));
+    }
+
+    [Fact]
     public void ParseErrorsAreReportedWithFileAndLine()
     {
         var root = FixturePaths.CreateTempFolder(("Tables/dbo.Broken.sql", "CREATE TABLE dbo.Ok (Id int)\nGO\nCREATE TABLE dbo.Broken (Id int,,)\nGO\n"));
