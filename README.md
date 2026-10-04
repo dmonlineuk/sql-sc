@@ -23,7 +23,7 @@ dotnet publish src/SqlSc.Cli -p:PublishProfile=win-x64     # artifacts/publish/w
 dotnet publish src/SqlSc.Cli -p:PublishProfile=linux-x64   # artifacts/publish/linux-x64/sql-sc
 ```
 
-Copy that one file across; nothing else is needed. Either profile can be built on Windows or Linux. CI also uploads both as build artifacts (`sql-sc-win-x64`, `sql-sc-linux-x64`).
+Copy that one file across; nothing else is needed to run it. `THIRD-PARTY-NOTICES.md` is published next to it: it covers the Microsoft `master.dacpac` files built into sql-sc, which are not MIT-licensed. Either profile can be built on Windows or Linux. CI also uploads both as build artifacts (`sql-sc-win-x64`, `sql-sc-linux-x64`).
 
 On its first run the executable unpacks itself to `%TEMP%\.net` (`$TMPDIR/.net` on Linux). If that folder isn't writable, set `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to one that is.
 

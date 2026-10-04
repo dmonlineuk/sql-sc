@@ -48,6 +48,100 @@ public class StatusTests(SqlServerFixture sql)
     }
 
     [Fact]
+    public void DiffShowsWhereModifiedScriptsFirstDiffer()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, """
+            ALTER PROCEDURE [Sales].[GetCustomer]
+                @CustomerId int
+            AS
+            BEGIN
+                SET NOCOUNT ON;
+                SELECT CustomerId, Name FROM Sales.Customer WHERE CustomerId = @CustomerId;
+            END
+            """);
+        sql.Execute(database, "CREATE INDEX [IX_Customer_Name] ON [Sales].[Customer] ([Name])");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false, includeDifferences: true);
+
+        var changes = report.Changes.ToDictionary(c => c.Name);
+        Assert.Equal(
+            "line 6 is `SELECT CustomerId, Name FROM Sales.Customer WHERE CustomerId = @CustomerId;` in the database, `SELECT CustomerId, Name, IsActive FROM Sales.Customer WHERE CustomerId = @CustomerId;` in the folder",
+            changes["[Sales].[GetCustomer]"].Difference);
+        Assert.Null(changes["[Sales].[Customer]"].Difference);
+        Assert.All(
+            StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false).Changes,
+            c => Assert.Null(c.Difference));
+    }
+
+    [Fact]
+    public void DiffShowsANewTableColumn()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "ALTER TABLE [Sales].[Customer] ADD [Region] nvarchar(50) NULL");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false, includeDifferences: true);
+
+        var difference = report.Changes.Single(c => c.Name == "[Sales].[Customer]").Difference;
+        Assert.NotNull(difference);
+        Assert.Contains("[Region]", difference, StringComparison.Ordinal);
+        Assert.Contains("in the database", difference, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NewObjectsUsingColumnsTheFolderLacksAreReportedAsNew(bool fullExtract)
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "ALTER TABLE [Sales].[Customer] ADD [Region] nvarchar(50) NULL");
+        sql.Execute(database, "CREATE VIEW [Sales].[CustomerRegion] AS SELECT c.Region AS region FROM [Sales].[Customer] c");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false, fullExtract: fullExtract);
+
+        var changes = report.Changes.ToDictionary(c => c.Name);
+        Assert.Equal(ObjectStatus.Modified, changes["[Sales].[Customer]"].Status);
+        Assert.Equal(ObjectStatus.New, changes["[Sales].[CustomerRegion]"].Status);
+    }
+
+    [Fact]
+    public void SystemNamedConstraintsScriptedWithTheirNamesMatch()
+    {
+        var folder = CopyDemo();
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "CREATE TABLE [Sales].[Region] ([RegionId] int NOT NULL PRIMARY KEY, [Code] nchar(2) NOT NULL UNIQUE, [Active] bit NOT NULL DEFAULT ((1)))");
+        var names = new Dictionary<string, string>();
+        using (var connection = new SqlConnection(sql.ConnectionString(database)))
+        {
+            connection.Open();
+            using var command = new SqlCommand("SELECT type, name FROM sys.objects WHERE parent_object_id = OBJECT_ID('Sales.Region') AND is_ms_shipped = 0", connection);
+            using var reader = command.ExecuteReader();
+            while (reader.Read())
+            {
+                names[reader.GetString(0).Trim()] = reader.GetString(1);
+            }
+        }
+
+        File.WriteAllText(Path.Combine(folder, "Tables", "Sales.Region.sql"), $"""
+            CREATE TABLE [Sales].[Region]
+            (
+            [RegionId] [int] NOT NULL,
+            [Code] [nchar] (2) NOT NULL,
+            [Active] [bit] NOT NULL CONSTRAINT [{names["D"]}] DEFAULT ((1))
+            )
+            GO
+            ALTER TABLE [Sales].[Region] ADD CONSTRAINT [{names["PK"]}] PRIMARY KEY CLUSTERED ([RegionId])
+            GO
+            ALTER TABLE [Sales].[Region] ADD CONSTRAINT [{names["UQ"]}] UNIQUE NONCLUSTERED ([Code])
+            GO
+            """);
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false);
+
+        Assert.True(report.Changes.Count == 0, string.Join(Environment.NewLine, Describe(report)));
+    }
+
+    [Fact]
     public void ChangedByComesFromTheDefaultTrace()
     {
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
@@ -172,21 +266,35 @@ public class StatusTests(SqlServerFixture sql)
     public void UnsupportedFeaturesFallBackToTheFullExtract()
     {
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
-        sql.Execute(database, """
-            CREATE TABLE [Sales].[Price]
-            (
-                [Id] int NOT NULL CONSTRAINT [PK_Price] PRIMARY KEY,
-                [ValidFrom] datetime2 GENERATED ALWAYS AS ROW START NOT NULL,
-                [ValidTo] datetime2 GENERATED ALWAYS AS ROW END NOT NULL,
-                PERIOD FOR SYSTEM_TIME ([ValidFrom], [ValidTo])
-            ) WITH (SYSTEM_VERSIONING = ON (HISTORY_TABLE = [Sales].[PriceHistory]))
-            """);
+        sql.Execute(database, "CREATE TABLE [Sales].[Price] ([Id] int NOT NULL CONSTRAINT [PK_Price] PRIMARY KEY) AS NODE");
 
         var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false);
 
         Assert.False(report.DatabaseModel.FromCatalog);
-        Assert.Contains(report.DatabaseModel.Unsupported, u => u.Contains("system-versioned", StringComparison.Ordinal));
+        Assert.Contains(report.DatabaseModel.Unsupported, u => u.Contains("graph", StringComparison.Ordinal));
         Assert.Contains(report.Changes, c => c.Name == "[Sales].[Price]" && c.Status == ObjectStatus.New);
+    }
+
+    [Fact]
+    public void FullExtractLeavesOutUntrackedObjectsWithUnresolvedReferences()
+    {
+        var folder = CopyDemo();
+        File.WriteAllText(Path.Combine(folder, "Filter.scpf"), ScratchExcluded);
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "CREATE SCHEMA [scratch]");
+        sql.Execute(database, "CREATE TABLE [scratch].[Dropped] ([Id] int NOT NULL)");
+        sql.Execute(database, "CREATE VIEW [scratch].[OverDropped] AS SELECT [src].[Id] FROM [scratch].[Dropped] AS [src]");
+        sql.Execute(database, "CREATE VIEW [scratch].[OnTop] AS SELECT [Id] FROM [scratch].[OverDropped]");
+        sql.Execute(database, "GRANT SELECT ON [scratch].[OverDropped] TO [app_reader]");
+        sql.Execute(database, "DROP TABLE [scratch].[Dropped]");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false, fullExtract: true);
+        var checks = Doctor.Run(sql.ConnectionString(database), WorkingFolder.Open(folder)).ToDictionary(c => c.Name);
+
+        Assert.True(report.Changes.Count == 0, string.Join(Environment.NewLine, report.Changes));
+        Assert.Contains("left out 2 untracked objects with unresolved references: [scratch].[OnTop], [scratch].[OverDropped]", report.DatabaseModel.Describe(), StringComparison.Ordinal);
+        Assert.True(checks["Schema extract"].Result == CheckResult.Ok, checks["Schema extract"].Detail);
+        Assert.EndsWith("catalog scripting matches it", checks["Schema extract"].Detail, StringComparison.Ordinal);
     }
 
     [Fact]

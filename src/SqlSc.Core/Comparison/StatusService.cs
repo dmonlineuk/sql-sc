@@ -4,6 +4,7 @@ using Microsoft.SqlServer.Dac.Compare;
 using Microsoft.SqlServer.Dac.Model;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Database;
+using SqlSc.Core.Diagnostics;
 using SqlSc.Core.Filtering;
 using SqlSc.Core.Modeling;
 using SqlSc.Core.Scripting;
@@ -26,7 +27,7 @@ public static class StatusService
     /// <summary>Types the default trace never reports by their own name.</summary>
     private static readonly HashSet<string> UntracedTypes = new(StringComparer.Ordinal) { "ExtendedProperty", "Permission", "RoleMembership" };
 
-    public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false)
+    public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false, bool includeDifferences = false)
     {
         var timings = new Dictionary<string, TimeSpan>();
         var stopwatch = Stopwatch.StartNew();
@@ -59,12 +60,34 @@ public static class StatusService
         {
             var databasePackage = Path.Combine(workDirectory, "database.dacpac");
             var folderPackage = Path.Combine(workDirectory, "folder.dacpac");
-            DacPackageExtensions.BuildPackage(databasePackage, databaseModel, new PackageMetadata { Name = server.DatabaseName });
-            folderModel.BuildPackage(folderPackage, server.DatabaseName);
+            try
+            {
+                DacPackageExtensions.BuildPackage(databasePackage, databaseModel, new PackageMetadata { Name = server.DatabaseName });
+            }
+            catch (DacServicesException ex)
+            {
+                throw new InvalidDataException($"The database model can't be saved ({database.Info.Describe()}). {Doctor.DescribeErrors(ex.Message)}", ex);
+            }
+
+            try
+            {
+                folderModel.BuildPackage(folderPackage, server.DatabaseName);
+            }
+            catch (DacServicesException ex)
+            {
+                throw new InvalidDataException($"The folder model can't be saved. {Doctor.DescribeErrors(ex.Message)}{DescribeCopied(ex.Message, borrowed)}", ex);
+            }
+
             timings["buildPackage"] = Lap(stopwatch);
 
             var compare = folder.Settings.Compare;
-            var raw = Compare(databasePackage, folderPackage, compare.ToDeployOptions())
+            var collations = includeDifferences
+                ? new[] { databaseModel.CopyModelOptions().Collation, folderModel.Model.CopyModelOptions().Collation }
+                    .OfType<string>()
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                : null;
+            var raw = Compare(databasePackage, folderPackage, compare.ToDeployOptions(), collations)
                 .Concat(borrowed.Objects.Select(o => new RawChange(ObjectStatus.New, o, FormatName(o.Name)!)))
                 .Where(r => compare.Includes(r.Object.ObjectType.Name))
                 .ToList();
@@ -120,7 +143,7 @@ public static class StatusService
         }
     }
 
-    private static List<RawChange> Compare(string databasePackage, string folderPackage, DacDeployOptions options)
+    private static List<RawChange> Compare(string databasePackage, string folderPackage, DacDeployOptions options, IReadOnlyCollection<string>? differenceCollations = null)
     {
         var comparison = new SchemaComparison(
             new SchemaCompareDacpacEndpoint(databasePackage),
@@ -149,7 +172,10 @@ public static class StatusService
                     _ => ObjectStatus.Modified,
                 },
                 x.Object!,
-                FormatName(x.Object!.Name) ?? x.Difference.Name))
+                FormatName(x.Object!.Name) ?? x.Difference.Name,
+                differenceCollations is not null && x.Difference.UpdateAction == SchemaUpdateAction.Change
+                    ? ScriptDifference.First(result.GetDiffEntrySourceScript(x.Difference), result.GetDiffEntryTargetScript(x.Difference), "in the database", "in the folder", differenceCollations)
+                    : null))
             .ToList();
     }
 
@@ -204,11 +230,26 @@ public static class StatusService
                     name,
                     files.GetValueOrDefault(name),
                     lastChange,
-                    children);
+                    children,
+                    self?.Difference is not { } difference ? null
+                        : difference != ScriptDifference.Same ? difference
+                        : children.Count == 0 ? SameScriptsDifference
+                        : null);
             })
             .OrderBy(c => c.ObjectType, StringComparer.Ordinal)
             .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
             .ToList();
+    }
+
+    /// <summary>Names objects copied from the database that clash with one already in the folder model.</summary>
+    private static string DescribeCopied(string message, BorrowedObjects borrowed)
+    {
+        var clashes = borrowed.Objects
+            .Select(o => (o.ObjectType.Name, Name: FormatName(o.Name)))
+            .Where(o => o.Name is not null && message.Contains($"element {o.Name}: The model already has", StringComparison.Ordinal))
+            .Select(o => $"{o.Item1} {o.Name}")
+            .ToList();
+        return clashes.Count == 0 ? string.Empty : $" Copied from the database although the folder has the same name: {string.Join(", ", clashes)}.";
     }
 
     /// <summary>The object whose script file contains <paramref name="obj"/>: e.g. a constraint's table.</summary>
@@ -258,5 +299,7 @@ public static class StatusService
         return elapsed;
     }
 
-    private sealed record RawChange(ObjectStatus Status, TSqlObject Object, string Name);
+    private const string SameScriptsDifference = "scripts match apart from layout and default collations, so the difference is in a setting outside the script text";
+
+    private sealed record RawChange(ObjectStatus Status, TSqlObject Object, string Name, string? Difference = null);
 }

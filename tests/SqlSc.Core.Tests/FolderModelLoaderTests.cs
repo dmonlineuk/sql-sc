@@ -77,6 +77,36 @@ public class FolderModelLoaderTests
         Assert.All(model.Issues, i => Assert.Equal(IssueSeverity.Warning, i.Severity));
     }
 
+    [Fact]
+    public void ConstraintAndTriggerStateStatementsApplyToObjectsEarlierInTheFile()
+    {
+        var root = FixturePaths.CreateTempFolder(("Tables/dbo.T.sql", """
+            CREATE TABLE [dbo].[T] ([Id] int NOT NULL PRIMARY KEY, [X] int NULL)
+            GO
+            ALTER TABLE [dbo].[T] ADD CONSTRAINT [CK_T_On] CHECK (([X]>(0)))
+            GO
+            ALTER TABLE [dbo].[T] WITH NOCHECK ADD CONSTRAINT [CK_T_Off] CHECK (([X]<(9)))
+            GO
+            ALTER TABLE [dbo].[T] CHECK CONSTRAINT [CK_T_On]
+            GO
+            ALTER TABLE [dbo].[T] NOCHECK CONSTRAINT [CK_T_Off]
+            GO
+            CREATE TRIGGER [dbo].[T_Insert] ON [dbo].[T] AFTER INSERT AS SET NOCOUNT ON
+            GO
+            DISABLE TRIGGER [dbo].[T_Insert] ON [dbo].[T]
+            GO
+            """));
+
+        using var model = FolderModelLoader.Load(WorkingFolder.Open(root));
+
+        Assert.False(model.HasErrors, string.Join("\n", model.Issues.Select(i => i.Message)));
+        var checks = model.Model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.CheckConstraint).ToDictionary(c => c.Name.Parts[^1]);
+        Assert.False(checks["CK_T_On"].GetProperty<bool>(CheckConstraint.Disabled));
+        Assert.True(checks["CK_T_Off"].GetProperty<bool>(CheckConstraint.Disabled));
+        var trigger = model.Model.GetObjects(DacQueryScopes.UserDefined, ModelSchema.DmlTrigger).Single();
+        Assert.True(trigger.GetProperty<bool>(DmlTrigger.Disabled));
+    }
+
     [Theory]
     [InlineData("Tables/dbo.T.sql", 12)]
     [InlineData("a|b.sql", 1)]

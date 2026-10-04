@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.SqlServer.TransactSql.ScriptDom;
 using SqlSc.Core.Filtering;
 
 namespace SqlSc.Core.Scripting;
@@ -46,6 +47,7 @@ internal sealed class CatalogScripter
     private readonly Dictionary<int, TypeRow> types;
     private readonly Dictionary<int, PrincipalRow> principals;
     private readonly Dictionary<int, SchemaRow> schemasById;
+    private readonly Dictionary<int, SchemaRow> systemSchemas;
     private readonly ILookup<int, ColumnRow> columns;
     private readonly ILookup<int, IndexRow> indexes;
     private readonly ILookup<(int, int), IndexColumnRow> indexColumns;
@@ -67,6 +69,7 @@ internal sealed class CatalogScripter
         types = catalog.Types.ToDictionary(t => t.Id);
         principals = catalog.Principals.ToDictionary(p => p.Id);
         schemasById = catalog.Schemas.ToDictionary(s => s.Id);
+        systemSchemas = catalog.SystemSchemas.ToDictionary(s => s.Id);
         columns = catalog.Columns.ToLookup(c => c.ObjectId);
         indexes = catalog.Indexes.ToLookup(i => i.ObjectId);
         indexColumns = catalog.IndexColumns.ToLookup(c => (c.ObjectId, c.IndexId));
@@ -106,7 +109,6 @@ internal sealed class CatalogScripter
         }
 
         seeds.AddRange(catalog.DataSources.Where(d => filter.Includes("ExternalDataSource", [d.Name])).Select(d => new Node('d', d.Id)));
-        seeds.AddRange(catalog.Credentials.Select(c => new Node('c', c.Id)));
         var tracked = seeds.Count;
         seeds.AddRange(Resolve(extraNames));
 
@@ -185,6 +187,11 @@ internal sealed class CatalogScripter
         foreach (var fk in catalog.ForeignKeys)
         {
             Edge(new Node('o', fk.ParentId), new Node('o', fk.ReferencedId));
+        }
+
+        foreach (var table in catalog.Tables.Where(t => t.HistoryTableId != 0))
+        {
+            Edge(new Node('o', table.Id), new Node('o', table.HistoryTableId));
         }
 
         foreach (var c in catalog.Columns.Where(c => c.UserType))
@@ -341,7 +348,7 @@ internal sealed class CatalogScripter
             yield break;
         }
 
-        yield return new ScriptUnit("o:" + Q(obj.Schema, obj.Name), module.Definition, module.QuotedIdentifier, module.AnsiNulls, type, obj.Schema, obj.Name);
+        yield return new ScriptUnit("o:" + Q(obj.Schema, obj.Name), WithName(module.Definition, module.QuotedIdentifier, obj.Schema, obj.Name), module.QuotedIdentifier, module.AnsiNulls, type, obj.Schema, obj.Name);
     }
 
     private List<ScriptUnit> ScriptTable(ObjectRow obj)
@@ -349,7 +356,6 @@ internal sealed class CatalogScripter
         var name = Q(obj.Schema, obj.Name);
         var table = tables[obj.Id];
         var features = new List<string>();
-        if (table.TemporalType != 0) features.Add("system-versioned");
         if (table.MemoryOptimized) features.Add("memory-optimized");
         if (table.Graph) features.Add("graph");
         if (table.ChangeTracking) features.Add("change tracking");
@@ -367,11 +373,28 @@ internal sealed class CatalogScripter
         var sb = new StringBuilder();
         sb.Append(Invariant($"CREATE TABLE {name}\n(\n"));
         sb.AppendJoin(",\n", columns[obj.Id].Select(ColumnDefinition));
+        if (columns[obj.Id].FirstOrDefault(c => c.GeneratedAlways == 1) is { } start && columns[obj.Id].FirstOrDefault(c => c.GeneratedAlways == 2) is { } end)
+        {
+            sb.Append(Invariant($",\nPERIOD FOR SYSTEM_TIME ({Q(start.Name)}, {Q(end.Name)})"));
+        }
+
         sb.Append("\n)");
+        var options = new List<string>();
         var heap = indexes[obj.Id].FirstOrDefault(i => i.Type == 0);
         if (heap is { Compression: { } c } && c != "NONE")
         {
-            sb.Append(Invariant($" WITH (DATA_COMPRESSION = {c})"));
+            options.Add(Invariant($"DATA_COMPRESSION = {c}"));
+        }
+
+        if (table.TemporalType == 2 && objects.TryGetValue(table.HistoryTableId, out var history))
+        {
+            var retention = table.RetentionPeriod > 0 ? Invariant($", HISTORY_RETENTION_PERIOD = {table.RetentionPeriod} {table.RetentionUnit}S") : string.Empty;
+            options.Add(Invariant($"SYSTEM_VERSIONING = ON (HISTORY_TABLE = {Q(history.Schema, history.Name)}{retention})"));
+        }
+
+        if (options.Count > 0)
+        {
+            sb.Append(" WITH (").AppendJoin(", ", options).Append(')');
         }
 
         sb.Append('\n');
@@ -416,9 +439,10 @@ internal sealed class CatalogScripter
         {
             if (modules.TryGetValue(trigger.Id, out var module) && module.Definition is not null)
             {
+                var definition = WithName(module.Definition, module.QuotedIdentifier, trigger.Schema, trigger.Name, (obj.Schema, obj.Name));
                 var script = module.TriggerDisabled
-                    ? Invariant($"{module.Definition}{BatchSeparator}DISABLE TRIGGER {Q(trigger.Schema, trigger.Name)} ON {name}")
-                    : module.Definition;
+                    ? Invariant($"{definition}{BatchSeparator}DISABLE TRIGGER {Q(trigger.Schema, trigger.Name)} ON {name}")
+                    : definition;
                 units.Add(new ScriptUnit("o:" + Q(trigger.Schema, trigger.Name), script, module.QuotedIdentifier, module.AnsiNulls, "DmlTrigger", trigger.Schema, trigger.Name));
             }
             else
@@ -558,6 +582,9 @@ internal sealed class CatalogScripter
         return new ScriptUnit("t:" + name, Invariant($"CREATE TYPE {name} AS TABLE\n(\n{string.Join(",\n", parts)}\n)"));
     }
 
+    private SchemaRow? Schema(int id) =>
+        schemasById.TryGetValue(id, out var s) || systemSchemas.TryGetValue(id, out s) ? s : null;
+
     private IEnumerable<ScriptUnit> ScriptPermissions(HashSet<Node> scripted)
     {
         var statements = new List<string>();
@@ -573,7 +600,7 @@ internal sealed class CatalogScripter
                 0 => string.Empty,
                 1 when scripted.Contains(new Node('o', p.MajorId)) && objects.TryGetValue(p.MajorId, out var o) =>
                     Invariant($" ON {Q(o.Schema, o.Name)}{(p.Column is { } c ? Invariant($" ({Q(c)})") : string.Empty)}"),
-                3 when schemasById.TryGetValue(p.MajorId, out var s) => Invariant($" ON SCHEMA::{Q(s.Name)}"),
+                3 when Schema(p.MajorId) is { } s => Invariant($" ON SCHEMA::{Q(s.Name)}"),
                 4 when principals.TryGetValue(p.MajorId, out var pr) =>
                     Invariant($" ON {(pr.Type == "R" ? "ROLE" : pr.Type == "A" ? "APPLICATION ROLE" : "USER")}::{Q(pr.Name)}"),
                 6 when scripted.Contains(new Node('t', p.MajorId)) => Invariant($" ON TYPE::{Q(types[p.MajorId].Schema, types[p.MajorId].Name)}"),
@@ -586,7 +613,11 @@ internal sealed class CatalogScripter
             }
 
             var verb = p.State == "D" ? "DENY" : "GRANT";
-            var grantor = p.GrantorId != 1 && principals.TryGetValue(p.GrantorId, out var g) ? " AS " + Q(g.Name) : string.Empty;
+            var grantor = p.GrantorId != 1
+                && principals.TryGetValue(p.GrantorId, out var g)
+                && !(p.Class == 3 && Schema(p.MajorId)?.Owner == g.Name)
+                ? " AS " + Q(g.Name)
+                : string.Empty;
             statements.Add(Invariant($"{verb} {p.Name}{on} TO {Q(grantee.Name)}{(p.State == "W" ? " WITH GRANT OPTION" : string.Empty)}{grantor}"));
         }
 
@@ -673,6 +704,15 @@ internal sealed class CatalogScripter
         if (c.Collation is { } collation && !string.Equals(collation, catalog.Collation, StringComparison.Ordinal))
         {
             sb.Append(" COLLATE ").Append(collation);
+        }
+
+        if (c.GeneratedAlways != 0)
+        {
+            sb.Append(c.GeneratedAlways == 1 ? " GENERATED ALWAYS AS ROW START" : " GENERATED ALWAYS AS ROW END");
+            if (c.Hidden)
+            {
+                sb.Append(" HIDDEN");
+            }
         }
 
         if (c.Sparse)
@@ -766,6 +806,50 @@ internal sealed class CatalogScripter
             "int" or "bigint" or "smallint" or "tinyint" or "bit" or "decimal" or "numeric" or "float" or "real" or "money" => value,
             _ => N(value),
         };
+
+    /// <summary>
+    /// A module definition with the name in its CREATE statement replaced by the object's actual schema and name.
+    /// sys.sql_modules keeps the text as written, so a module created without a schema, or renamed with sp_rename, names something else.
+    /// </summary>
+    internal static string WithName(string definition, bool quotedIdentifier, string schema, string name, (string Schema, string Name)? table = null)
+    {
+        var fragment = new TSql170Parser(quotedIdentifier).Parse(new StringReader(definition), out var errors);
+        if (errors.Count > 0 || fragment is not TSqlScript { Batches: [{ Statements: [var statement, ..] }, ..] })
+        {
+            return definition;
+        }
+
+        var target = statement switch
+        {
+            ProcedureStatementBody procedure => procedure.ProcedureReference?.Name,
+            FunctionStatementBody function => function.Name,
+            ViewStatementBody view => view.SchemaObjectName,
+            TriggerStatementBody trigger => trigger.Name,
+            _ => null,
+        };
+        var replacements = new List<(SchemaObjectName Name, string Text)>();
+        if (target is not null && !Names(target, schema, name))
+        {
+            replacements.Add((target, Q(schema, name)));
+        }
+
+        if (table is var (tableSchema, tableName)
+            && statement is TriggerStatementBody { TriggerObject: { TriggerScope: TriggerScope.Normal, Name: { } on } }
+            && !Names(on, tableSchema, tableName))
+        {
+            replacements.Add((on, Q(tableSchema, tableName)));
+        }
+
+        foreach (var (old, text) in replacements.OrderByDescending(r => r.Name.StartOffset))
+        {
+            definition = string.Concat(definition.AsSpan(0, old.StartOffset), text, definition.AsSpan(old.StartOffset + old.FragmentLength));
+        }
+
+        return definition;
+    }
+
+    private static bool Names(SchemaObjectName name, string schema, string objectName) =>
+        name.SchemaIdentifier?.Value == schema && name.BaseIdentifier?.Value == objectName && name.DatabaseIdentifier is null;
 
     internal static string Q(string name) => "[" + name.Replace("]", "]]", StringComparison.Ordinal) + "]";
 

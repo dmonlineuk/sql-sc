@@ -16,4 +16,8 @@
     <ProjectReference Include="..\SqlSc.Core\SqlSc.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+  </ItemGroup>
+
 </Project>

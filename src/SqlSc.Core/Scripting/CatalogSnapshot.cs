@@ -6,7 +6,7 @@ internal sealed record SchemaRow(int Id, string Name, string Owner);
 
 internal sealed record ObjectRow(int Id, string Schema, string Name, string Type, int ParentId);
 
-internal sealed record TableRow(int Id, int TemporalType, bool MemoryOptimized, bool Graph, int LockEscalation, bool LargeValuesOutOfRow, int TextInRowLimit, bool ChangeTracking, bool FileTable);
+internal sealed record TableRow(int Id, int TemporalType, bool MemoryOptimized, bool Graph, int LockEscalation, bool LargeValuesOutOfRow, int TextInRowLimit, bool ChangeTracking, bool FileTable, int HistoryTableId = 0, int RetentionPeriod = -1, string? RetentionUnit = null);
 
 internal sealed record ColumnRow(
     int ObjectId,
@@ -31,7 +31,9 @@ internal sealed record ColumnRow(
     bool Unsupported,
     string? DefaultName,
     string? DefaultDefinition,
-    bool DefaultSystemNamed);
+    bool DefaultSystemNamed,
+    int GeneratedAlways = 0,
+    bool Hidden = false);
 
 internal sealed record IndexRow(
     int ObjectId,
@@ -92,6 +94,9 @@ internal sealed class CatalogSnapshot
 
     public required IReadOnlyList<SchemaRow> Schemas { get; init; }
 
+    /// <summary><c>dbo</c>, <c>guest</c>, <c>sys</c>, <c>INFORMATION_SCHEMA</c> and the fixed role schemas, which can still have permissions.</summary>
+    public IReadOnlyList<SchemaRow> SystemSchemas { get; init; } = [];
+
     public required IReadOnlyList<ObjectRow> Objects { get; init; }
 
     public required IReadOnlyList<TableRow> Tables { get; init; }
@@ -141,6 +146,10 @@ internal sealed class CatalogSnapshot
     /// <summary>Database-level features the scripter does not handle, with how many of each exist.</summary>
     public required IReadOnlyList<(string Feature, int Count)> UnsupportedFeatures { get; init; }
 
+    /// <summary>Azure SQL Database (including Hyperscale) and Synapse have no server logins to look up by SID.</summary>
+    private static bool HasServerLogins(SqlConnection connection) =>
+        Read(connection, "SELECT CAST(SERVERPROPERTY('EngineEdition') AS int)", r => r.GetInt32(0)).Single() is not (5 or 6 or 11);
+
     public static CatalogSnapshot Read(SqlConnection connection) => new()
     {
         Collation = Read(connection, "SELECT CAST(DATABASEPROPERTYEX(DB_NAME(), 'Collation') AS nvarchar(128))", r => r.GetString(0)).Single(),
@@ -149,26 +158,36 @@ internal sealed class CatalogSnapshot
             FROM sys.schemas AS s JOIN sys.database_principals AS p ON p.principal_id = s.principal_id
             WHERE s.schema_id BETWEEN 5 AND 16383
             """, r => new SchemaRow(r.GetInt32(0), r.GetString(1), r.GetString(2))),
+        SystemSchemas = Read(connection, """
+            SELECT s.schema_id, s.name, p.name
+            FROM sys.schemas AS s JOIN sys.database_principals AS p ON p.principal_id = s.principal_id
+            WHERE s.schema_id NOT BETWEEN 5 AND 16383
+            """, r => new SchemaRow(r.GetInt32(0), r.GetString(1), r.GetString(2))),
         Objects = Read(connection, """
             SELECT o.object_id, s.name, o.name, RTRIM(o.type), o.parent_object_id
             FROM sys.objects AS o JOIN sys.schemas AS s ON s.schema_id = o.schema_id
             WHERE o.is_ms_shipped = 0
+              AND NOT EXISTS (
+                  SELECT 1 FROM sys.extended_properties AS ep
+                  WHERE ep.class = 1 AND ep.minor_id = 0 AND ep.name = N'microsoft_database_tools_support'
+                    AND ep.major_id IN (o.object_id, o.parent_object_id))
             """, r => new ObjectRow(r.GetInt32(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetInt32(4))),
         Tables = Read(connection, """
             SELECT t.object_id, t.temporal_type, t.is_memory_optimized, CAST(t.is_node | t.is_edge AS bit), t.lock_escalation,
                    t.large_value_types_out_of_row, t.text_in_row_limit,
-                   CAST(CASE WHEN ct.object_id IS NULL THEN 0 ELSE 1 END AS bit), t.is_filetable
+                   CAST(CASE WHEN ct.object_id IS NULL THEN 0 ELSE 1 END AS bit), t.is_filetable,
+                   ISNULL(t.history_table_id, 0), ISNULL(t.history_retention_period, -1), t.history_retention_period_unit_desc
             FROM sys.tables AS t LEFT JOIN sys.change_tracking_tables AS ct ON ct.object_id = t.object_id
             WHERE t.is_ms_shipped = 0
-            """, r => new TableRow(r.GetInt32(0), r.GetByte(1), r.GetBoolean(2), r.GetBoolean(3), r.GetByte(4), r.GetBoolean(5), r.GetInt32(6), r.GetBoolean(7), r.GetBoolean(8))),
+            """, r => new TableRow(r.GetInt32(0), r.GetByte(1), r.GetBoolean(2), r.GetBoolean(3), r.GetByte(4), r.GetBoolean(5), r.GetInt32(6), r.GetBoolean(7), r.GetBoolean(8), r.GetInt32(9), r.GetInt32(10), NullableString(r, 11))),
         Columns = Read(connection, """
             SELECT c.object_id, c.column_id, c.name, ts.name, t.name, t.is_user_defined, c.max_length, c.precision, c.scale,
                    c.collation_name, c.is_nullable, c.is_identity,
                    CAST(ic.seed_value AS nvarchar(64)), CAST(ic.increment_value AS nvarchar(64)), ISNULL(ic.is_not_for_replication, 0),
                    cc.definition, ISNULL(cc.is_persisted, 0), c.is_sparse, c.is_rowguidcol,
-                   CAST(CASE WHEN c.is_filestream = 1 OR c.is_column_set = 1 OR c.generated_always_type <> 0
+                   CAST(CASE WHEN c.is_filestream = 1 OR c.is_column_set = 1 OR c.generated_always_type NOT IN (0, 1, 2)
                              OR c.encryption_type IS NOT NULL OR c.is_masked = 1 OR c.xml_collection_id <> 0 THEN 1 ELSE 0 END AS bit),
-                   dc.name, dc.definition, ISNULL(dc.is_system_named, 0)
+                   dc.name, dc.definition, ISNULL(dc.is_system_named, 0), c.generated_always_type, c.is_hidden
             FROM sys.columns AS c
             JOIN sys.objects AS o ON o.object_id = c.object_id
             JOIN sys.types AS t ON t.user_type_id = c.user_type_id
@@ -182,7 +201,7 @@ internal sealed class CatalogSnapshot
                 r.GetInt32(0), r.GetInt32(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetBoolean(5), r.GetInt16(6), r.GetByte(7), r.GetByte(8),
                 NullableString(r, 9), r.GetBoolean(10), r.GetBoolean(11), NullableString(r, 12), NullableString(r, 13), r.GetBoolean(14),
                 NullableString(r, 15), r.GetBoolean(16), r.GetBoolean(17), r.GetBoolean(18), r.GetBoolean(19),
-                NullableString(r, 20), NullableString(r, 21), r.GetBoolean(22))),
+                NullableString(r, 20), NullableString(r, 21), r.GetBoolean(22), r.GetByte(23), r.GetBoolean(24))),
         Indexes = Read(connection, """
             SELECT i.object_id, i.index_id, i.name, i.type, i.is_unique, i.is_primary_key, i.is_unique_constraint,
                    ISNULL(kc.is_system_named, 0), i.ignore_dup_key, i.fill_factor, i.is_padded, i.allow_row_locks, i.allow_page_locks,
@@ -257,9 +276,9 @@ internal sealed class CatalogSnapshot
             FROM sys.sequences AS sq JOIN sys.types AS t ON t.user_type_id = sq.user_type_id
             WHERE sq.is_ms_shipped = 0
             """, r => new SequenceRow(r.GetInt32(0), r.GetString(1), r.GetByte(2), r.GetString(3), r.GetString(4), r.GetString(5), r.GetString(6), r.GetBoolean(7), r.GetBoolean(8), r.IsDBNull(9) ? null : r.GetInt32(9))),
-        Principals = Read(connection, """
+        Principals = Read(connection, $"""
             SELECT p.principal_id, p.name, RTRIM(p.type), p.owning_principal_id, p.default_schema_name, p.authentication_type,
-                   SUSER_SNAME(p.sid), p.is_fixed_role
+                   {(HasServerLogins(connection) ? "SUSER_SNAME(p.sid)" : "NULL")}, p.is_fixed_role
             FROM sys.database_principals AS p
             """, r => new PrincipalRow(r.GetInt32(0), r.GetString(1), r.GetString(2), r.IsDBNull(3) ? null : r.GetInt32(3), NullableString(r, 4), r.GetInt32(5), NullableString(r, 6), r.GetBoolean(7))),
         RoleMembers = Read(connection, "SELECT role_principal_id, member_principal_id FROM sys.database_role_members", r => (r.GetInt32(0), r.GetInt32(1))),

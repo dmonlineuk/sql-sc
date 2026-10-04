@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.RegularExpressions;
 using Microsoft.Data.SqlClient;
+using Microsoft.SqlServer.Dac;
 using Microsoft.SqlServer.Dac.Model;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
@@ -26,7 +28,7 @@ public sealed record DoctorCheck(string Name, CheckResult Result, string Detail)
 /// Checks everything sql-sc needs from a server, database and working folder, and reports it in a form that is
 /// safe to share (no connection strings or passwords).
 /// </summary>
-public static class Doctor
+public static partial class Doctor
 {
     public static IReadOnlyList<DoctorCheck> Run(string? connectionString, WorkingFolder? folder, bool extract = true)
     {
@@ -101,9 +103,9 @@ public static class Doctor
             return new DoctorCheck(name, result, detail);
         }
         catch (Exception ex) when (ex is SqlException or InvalidOperationException or IOException or InvalidDataException
-            or UnauthorizedAccessException or DacModelException or FormatException)
+            or UnauthorizedAccessException or DacModelException or DacServicesException or FormatException)
         {
-            return new DoctorCheck(name, CheckResult.Failed, ex.Message.Split('\n')[0].Trim());
+            return new DoctorCheck(name, CheckResult.Failed, ex is DacServicesException ? DescribeErrors(ex.Message) : ex.Message.Split('\n')[0].Trim());
         }
     }
 
@@ -246,7 +248,8 @@ public static class Doctor
     private static (CheckResult, string) CheckExtract(string connectionString, TSqlModel? scripted, ObjectFilter filter)
     {
         var stopwatch = Stopwatch.StartNew();
-        using var model = DatabaseModelLoader.LoadFull(connectionString);
+        var (model, leftOut) = DatabaseModelLoader.LoadFull(connectionString, filter);
+        using var disposeModel = model;
         var elapsed = stopwatch.Elapsed;
         var objects = model.GetObjects(DacQueryScopes.UserDefined).ToList();
         var largest = objects.GroupBy(o => o.ObjectType.Name, StringComparer.Ordinal)
@@ -254,7 +257,7 @@ public static class Doctor
             .OrderByDescending(g => g.Count)
             .ThenBy(g => g.Key, StringComparer.Ordinal)
             .Take(6);
-        var detail = Invariant($"{objects.Count} objects in {elapsed.TotalSeconds:0.00}s ({Top(largest)})");
+        var detail = Invariant($"{objects.Count} objects in {elapsed.TotalSeconds:0.00}s ({Top(largest)})") + DatabaseModelInfo.DescribeLeftOut(leftOut);
         if (scripted is null)
         {
             return (CheckResult.Ok, detail);
@@ -263,8 +266,70 @@ public static class Doctor
         var differences = StatusService.CompareModels(model, scripted, filter);
         return differences.Count == 0
             ? (CheckResult.Ok, detail + "; catalog scripting matches it")
-            : (CheckResult.Warning, detail + Invariant($"; catalog scripting differs in {differences.Count} places: {string.Join("; ", differences.Take(10))}"));
+            : (CheckResult.Warning, detail + Invariant($"; catalog scripting differs in {differences.Count} places ({DescribeDifferenceKinds(differences)}): {DescribeDifferences(differences, model, scripted)}"));
     }
+
+    private const int ModifiedShown = 5;
+
+    /// <summary>The first difference of each kind, then where the scripts of the first few modified objects differ.</summary>
+    private static string DescribeDifferences(IReadOnlyList<string> differences, TSqlModel full, TSqlModel scripted)
+    {
+        var examples = differences.GroupBy(d => string.Join(' ', d.Split(' ', 3).Take(2)), StringComparer.Ordinal).Select(g => g.First());
+        var modified = differences
+            .Select(d => d.Split(' ', 3))
+            .Where(p => p is ["Modified", _, _])
+            .Take(ModifiedShown)
+            .Select(p => Script(full, p[1], p[2]) is { } expected && Script(scripted, p[1], p[2]) is { } actual
+                ? Invariant($"{p[1]} {p[2]}: {FirstDifference(expected, actual)}")
+                : null)
+            .OfType<string>();
+        return string.Join("; ", examples.Concat(modified));
+    }
+
+    private static string? Script(TSqlModel model, string type, string name) =>
+        model.GetObjects(DacQueryScopes.UserDefined)
+            .FirstOrDefault(o => o.ObjectType.Name == type && StatusService.FormatName(o.Name) == name) is { } obj
+            && obj.TryGetScript(out var script)
+            ? script
+            : null;
+
+    internal static string FirstDifference(string fullExtract, string catalog) =>
+        ScriptDifference.First(fullExtract, catalog, "in the full extract", "from the catalog");
+
+    /// <summary>Counts differences ("Status Type Name") by status and type, most common first.</summary>
+    internal static string DescribeDifferenceKinds(IEnumerable<string> differences) =>
+        Top(differences
+            .GroupBy(d => string.Join(' ', d.Split(' ', 3).Take(2)), StringComparer.Ordinal)
+            .Select(g => (g.Key, Count: g.Count()))
+            .OrderByDescending(g => g.Count)
+            .ThenBy(g => g.Key, StringComparer.Ordinal));
+
+    /// <summary>
+    /// DacFx lists one error per line after its first line. Gives the first error of each object (up to
+    /// <see cref="ErrorObjectsShown"/>), so it's clear what stops a model being saved.
+    /// </summary>
+    internal static string DescribeErrors(string message)
+    {
+        var lines = message.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        if (lines.Length <= 1)
+        {
+            return lines.FirstOrDefault() ?? string.Empty;
+        }
+
+        var objects = lines.Skip(1)
+            .Select(l => ErrorLine().Match(l))
+            .Where(m => m.Success)
+            .GroupBy(m => m.Groups["element"].Value, StringComparer.OrdinalIgnoreCase)
+            .Select(g => Invariant($"{g.Key} {g.First().Groups["code"].Value}{(g.First().Groups["message"].Success ? ": " + g.First().Groups["message"].Value : string.Empty)}"))
+            .ToList();
+        var more = objects.Count > ErrorObjectsShown ? Invariant($"; and {objects.Count - ErrorObjectsShown} more") : string.Empty;
+        return Invariant($"{lines[0].TrimEnd(':')}: {lines.Length - 1} errors in {objects.Count} objects: {string.Join("; ", objects.Take(ErrorObjectsShown))}{more}");
+    }
+
+    private const int ErrorObjectsShown = 10;
+
+    [GeneratedRegex(@"^Error (?<code>SQL\d+): Error validating element (?<element>\[.*?\](?:\.\[.*?\])*)(?::\s*(?<message>.*))?$")]
+    private static partial Regex ErrorLine();
 
     private static T Query<T>(SqlConnection connection, string sql, Func<SqlDataReader, T> read)
     {
