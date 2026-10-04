@@ -27,7 +27,7 @@ public static class StatusService
     /// <summary>Types the default trace never reports by their own name.</summary>
     private static readonly HashSet<string> UntracedTypes = new(StringComparer.Ordinal) { "ExtendedProperty", "Permission", "RoleMembership" };
 
-    public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false)
+    public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false, bool includeDifferences = false)
     {
         var timings = new Dictionary<string, TimeSpan>();
         var stopwatch = Stopwatch.StartNew();
@@ -81,7 +81,13 @@ public static class StatusService
             timings["buildPackage"] = Lap(stopwatch);
 
             var compare = folder.Settings.Compare;
-            var raw = Compare(databasePackage, folderPackage, compare.ToDeployOptions())
+            var collations = includeDifferences
+                ? new[] { databaseModel.CopyModelOptions().Collation, folderModel.Model.CopyModelOptions().Collation }
+                    .OfType<string>()
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList()
+                : null;
+            var raw = Compare(databasePackage, folderPackage, compare.ToDeployOptions(), collations)
                 .Concat(borrowed.Objects.Select(o => new RawChange(ObjectStatus.New, o, FormatName(o.Name)!)))
                 .Where(r => compare.Includes(r.Object.ObjectType.Name))
                 .ToList();
@@ -137,7 +143,7 @@ public static class StatusService
         }
     }
 
-    private static List<RawChange> Compare(string databasePackage, string folderPackage, DacDeployOptions options)
+    private static List<RawChange> Compare(string databasePackage, string folderPackage, DacDeployOptions options, IReadOnlyCollection<string>? differenceCollations = null)
     {
         var comparison = new SchemaComparison(
             new SchemaCompareDacpacEndpoint(databasePackage),
@@ -166,7 +172,10 @@ public static class StatusService
                     _ => ObjectStatus.Modified,
                 },
                 x.Object!,
-                FormatName(x.Object!.Name) ?? x.Difference.Name))
+                FormatName(x.Object!.Name) ?? x.Difference.Name,
+                differenceCollations is not null && x.Difference.UpdateAction == SchemaUpdateAction.Change
+                    ? ScriptDifference.First(result.GetDiffEntrySourceScript(x.Difference), result.GetDiffEntryTargetScript(x.Difference), "in the database", "in the folder", differenceCollations)
+                    : null))
             .ToList();
     }
 
@@ -221,7 +230,11 @@ public static class StatusService
                     name,
                     files.GetValueOrDefault(name),
                     lastChange,
-                    children);
+                    children,
+                    self?.Difference is not { } difference ? null
+                        : difference != ScriptDifference.Same ? difference
+                        : children.Count == 0 ? SameScriptsDifference
+                        : null);
             })
             .OrderBy(c => c.ObjectType, StringComparer.Ordinal)
             .ThenBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
@@ -286,5 +299,7 @@ public static class StatusService
         return elapsed;
     }
 
-    private sealed record RawChange(ObjectStatus Status, TSqlObject Object, string Name);
+    private const string SameScriptsDifference = "scripts match apart from layout and default collations, so the difference is in a setting outside the script text";
+
+    private sealed record RawChange(ObjectStatus Status, TSqlObject Object, string Name, string? Difference = null);
 }

@@ -47,6 +47,47 @@ public class StatusTests(SqlServerFixture sql)
         Assert.Equal(3, report.Changes.Count(c => c.ObjectType is "Procedure" or "Table" or "View"));
     }
 
+    [Fact]
+    public void DiffShowsWhereModifiedScriptsFirstDiffer()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, """
+            ALTER PROCEDURE [Sales].[GetCustomer]
+                @CustomerId int
+            AS
+            BEGIN
+                SET NOCOUNT ON;
+                SELECT CustomerId, Name FROM Sales.Customer WHERE CustomerId = @CustomerId;
+            END
+            """);
+        sql.Execute(database, "CREATE INDEX [IX_Customer_Name] ON [Sales].[Customer] ([Name])");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false, includeDifferences: true);
+
+        var changes = report.Changes.ToDictionary(c => c.Name);
+        Assert.Equal(
+            "line 6 is `SELECT CustomerId, Name FROM Sales.Customer WHERE CustomerId = @CustomerId;` in the database, `SELECT CustomerId, Name, IsActive FROM Sales.Customer WHERE CustomerId = @CustomerId;` in the folder",
+            changes["[Sales].[GetCustomer]"].Difference);
+        Assert.Null(changes["[Sales].[Customer]"].Difference);
+        Assert.All(
+            StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false).Changes,
+            c => Assert.Null(c.Difference));
+    }
+
+    [Fact]
+    public void DiffShowsANewTableColumn()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "ALTER TABLE [Sales].[Customer] ADD [Region] nvarchar(50) NULL");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(SqlServerFixture.DemoFolder), sql.ConnectionString(database), includeChangedBy: false, includeDifferences: true);
+
+        var difference = report.Changes.Single(c => c.Name == "[Sales].[Customer]").Difference;
+        Assert.NotNull(difference);
+        Assert.Contains("[Region]", difference, StringComparison.Ordinal);
+        Assert.Contains("in the database", difference, StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

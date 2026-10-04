@@ -293,22 +293,8 @@ public static partial class Doctor
             ? script
             : null;
 
-    /// <summary>The first line where two scripts differ, ignoring indentation and blank lines.</summary>
-    internal static string FirstDifference(string fullExtract, string catalog)
-    {
-        static string[] Lines(string s) => s.Split('\n', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-        static string Cut(string s) => s.Length > 150 ? s[..150] + "..." : s;
-        var (a, b) = (Lines(fullExtract), Lines(catalog));
-        var i = 0;
-        while (i < a.Length && i < b.Length && a[i] == b[i])
-        {
-            i++;
-        }
-
-        return i == a.Length && i == b.Length
-            ? "scripts are the same"
-            : Invariant($"line {i + 1} is `{(i < a.Length ? Cut(a[i]) : "(end)")}` in the full extract, `{(i < b.Length ? Cut(b[i]) : "(end)")}` from the catalog");
-    }
+    internal static string FirstDifference(string fullExtract, string catalog) =>
+        ScriptDifference.First(fullExtract, catalog, "in the full extract", "from the catalog");
 
     /// <summary>Counts differences ("Status Type Name") by status and type, most common first.</summary>
     internal static string DescribeDifferenceKinds(IEnumerable<string> differences) =>

@@ -1,3 +1,4 @@
+using SqlSc.Core.Comparison;
 using SqlSc.Core.Diagnostics;
 
 namespace SqlSc.Core.Tests;
@@ -24,5 +25,14 @@ public class DoctorTests
     public void FirstDifferenceIgnoresIndentation(string fullExtract, string catalog, string expected)
     {
         Assert.Equal(expected, Doctor.FirstDifference(fullExtract, catalog));
+    }
+
+    [Theory]
+    [InlineData("[Name] NVARCHAR (100) NOT NULL,", "[Name] NVARCHAR (100) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,", "scripts are the same")]
+    [InlineData("[Name] NVARCHAR (100) COLLATE Latin1_General_BIN NOT NULL,", "[Name] NVARCHAR (100) NOT NULL,", "line 1 is `[Name] NVARCHAR (100) COLLATE Latin1_General_BIN NOT NULL,` in the database, `[Name] NVARCHAR (100) NOT NULL,` in the folder")]
+    [InlineData("(\n[A] INT,\n[B] INT\n)", "(\n[A] INT\n)", "line 3 is `[B] INT` in the database, `)` in the folder")]
+    public void ScriptDifferenceIgnoresDefaultCollation(string database, string folder, string expected)
+    {
+        Assert.Equal(expected, ScriptDifference.First(database, folder, "in the database", "in the folder", ["SQL_Latin1_General_CP1_CI_AS"]));
     }
 }

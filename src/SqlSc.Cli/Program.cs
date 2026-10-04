@@ -32,6 +32,7 @@ var modeOption = new Option<DatabaseMode>("--mode") { Description = "shared (one
 var removeOption = new Option<bool>("--remove") { Description = "Remove the folder's link." };
 var optionalFolderArgument = new Argument<DirectoryInfo?>("folder") { Description = "Working folder. Defaults to the current folder.", Arity = ArgumentArity.ZeroOrOne };
 var noChangedByOption = new Option<bool>("--no-changed-by") { Description = "Skip reading the default trace." };
+var diffOption = new Option<bool>("--diff") { Description = "For each modified object, show the first line where the database and folder scripts differ." };
 var fullExtractOption = new Option<bool>("--full-extract") { Description = "Read the whole database with DacFx instead of scripting only tracked objects from the catalog." };
 
 var load = new Command("load", "Load a working folder into a schema model and report any problems.")
@@ -59,7 +60,7 @@ load.SetAction(result =>
 
 var status = new Command("status", "Show objects that differ between the database and the working folder.")
 {
-    folderArgument, connectionOption, noChangedByOption, fullExtractOption, jsonOption,
+    folderArgument, connectionOption, noChangedByOption, fullExtractOption, diffOption, jsonOption,
 };
 status.SetAction(result =>
 {
@@ -75,7 +76,8 @@ status.SetAction(result =>
         folder,
         connection,
         includeChangedBy: !result.GetValue(noChangedByOption),
-        fullExtract: result.GetValue(fullExtractOption));
+        fullExtract: result.GetValue(fullExtractOption),
+        includeDifferences: result.GetValue(diffOption));
 
     if (result.GetValue(jsonOption))
     {
@@ -105,6 +107,11 @@ status.SetAction(result =>
     {
         var who = change.LastChange is { } e ? Invariant($"{e.LoginName} {e.StartTime:yyyy-MM-dd HH:mm}") : "Unknown";
         Console.WriteLine($"  {change.Status,-9} {change.ObjectType,-24} {change.Name,-50} {who}");
+        if (change.Difference is not null)
+        {
+            Console.WriteLine($"      First difference: {change.Difference}");
+        }
+
         foreach (var child in change.Children)
         {
             Console.WriteLine($"      {child.Status,-9} {child.ObjectType,-20} {child.Name}");

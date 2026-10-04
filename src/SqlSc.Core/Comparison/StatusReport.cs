@@ -22,6 +22,7 @@ public sealed record ChildChange(ObjectStatus Status, string ObjectType, string 
 /// <summary>
 /// A changed object, with its changed children grouped under it as in the object's script file.
 /// An object whose only changes are to its children is reported as <see cref="ObjectStatus.Modified"/>.
+/// <see cref="Difference"/> is where a modified object's database and folder scripts first differ, when requested.
 /// </summary>
 public sealed record ObjectChange(
     ObjectStatus Status,
@@ -29,7 +30,8 @@ public sealed record ObjectChange(
     string Name,
     string? File,
     ChangeEvent? LastChange,
-    IReadOnlyList<ChildChange> Children);
+    IReadOnlyList<ChildChange> Children,
+    string? Difference = null);
 
 public sealed record StatusReport(
     string Server,
