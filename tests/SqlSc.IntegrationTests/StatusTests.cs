@@ -22,6 +22,30 @@ public class StatusTests(SqlServerFixture sql)
     }
 
     [Fact]
+    public void CommentsAroundAProcedureMatch()
+    {
+        const string definition = """
+            -- =============================================
+            -- Author:      x
+            -- =============================================
+            create   procedure [Sales].[GetCustomer]
+                @CustomerId int
+            AS
+            SELECT CustomerId, Name, IsActive FROM Sales.Customer WHERE CustomerId = @CustomerId;
+            -- trailing comment
+            """;
+        var folder = CopyDemo();
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "DROP PROCEDURE [Sales].[GetCustomer]");
+        sql.Execute(database, definition);
+        File.WriteAllText(Path.Combine(folder, "Stored Procedures", "Sales.GetCustomer.sql"), $"SET QUOTED_IDENTIFIER ON\r\nGO\r\nSET ANSI_NULLS ON\r\nGO\r\n{definition}\r\nGO\r\n");
+
+        var report = StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false);
+
+        Assert.True(report.Changes.Count == 0, string.Join(Environment.NewLine, report.Changes));
+    }
+
+    [Fact]
     public void ReportsNewModifiedAndDeletedObjects()
     {
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);

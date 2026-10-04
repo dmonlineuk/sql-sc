@@ -31,6 +31,8 @@ public class DoctorTests
     [InlineData("[Name] NVARCHAR (100) NOT NULL,", "[Name] NVARCHAR (100) COLLATE SQL_Latin1_General_CP1_CI_AS NOT NULL,", "scripts are the same")]
     [InlineData("[Name] NVARCHAR (100) COLLATE Latin1_General_BIN NOT NULL,", "[Name] NVARCHAR (100) NOT NULL,", "line 1 is `[Name] NVARCHAR (100) COLLATE Latin1_General_BIN NOT NULL,` in the database, `[Name] NVARCHAR (100) NOT NULL,` in the folder")]
     [InlineData("(\n[A] INT,\n[B] INT\n)", "(\n[A] INT\n)", "line 3 is `[B] INT` in the database, `)` in the folder")]
+    [InlineData("create   procedure [s].[P] AS SELECT  1", "CREATE PROCEDURE [s].[P] as\tSELECT 1", "scripts are the same")]
+    [InlineData("SELECT 'a'", "SELECT 'A'", "line 1 is `SELECT 'a'` in the database, `SELECT 'A'` in the folder")]
     public void ScriptDifferenceIgnoresDefaultCollation(string database, string folder, string expected)
     {
         Assert.Equal(expected, ScriptDifference.First(database, folder, "in the database", "in the folder", ["SQL_Latin1_General_CP1_CI_AS"]));
