@@ -182,6 +182,8 @@ public static class FolderModelLoader
                 case EnableDisableTriggerStatement trigger:
                     names.AddRange(trigger.TriggerNames.Select(n => n.BaseIdentifier.Value));
                     break;
+                case AlterTableSetStatement:
+                    break;
                 default:
                     return null;
             }

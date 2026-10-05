@@ -36,11 +36,11 @@ internal sealed class CatalogScripter
     };
 
     /// <summary>DacFx needs a password to model SQL logins and contained users; like its own extract, a random one is used and never leaves the process.</summary>
-    private static readonly string GeneratedPassword = "Aa1!" + Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+    internal static readonly string GeneratedPassword = "Aa1!" + Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
 
     private static readonly HashSet<string> ClrTypes = new(StringComparer.Ordinal) { "PC", "FS", "FT", "AF" };
 
-    private const string BatchSeparator = "\nGO\n";
+    internal const string BatchSeparator = "\nGO\n";
 
     private readonly CatalogSnapshot catalog;
     private readonly Dictionary<int, ObjectRow> objects;

@@ -13,7 +13,8 @@ public sealed record RedgateDatabaseInfo(
     string? EngineEdition,
     bool IsAzure,
     string DataFolder,
-    IReadOnlyList<string> DataFiles)
+    IReadOnlyList<string> DataFiles,
+    IReadOnlyDictionary<string, string>? Prefixes = null)
 {
     public const string FileName = "RedGateDatabaseInfo.xml";
 
@@ -41,9 +42,14 @@ public sealed record RedgateDatabaseInfo(
             EngineEdition: Value("EngineEdition"),
             IsAzure: string.Equals(Value("IsAzure"), "True", StringComparison.OrdinalIgnoreCase),
             DataFolder: NormalizeSeparators(dataFolder),
-            DataFiles: dataFiles);
+            DataFiles: dataFiles,
+            Prefixes: prefixes?.Elements()
+                .Select(e => (e.Name.LocalName, Value: e.Value.Trim()))
+                .Where(e => e.Value.Length > 0)
+                .GroupBy(e => e.LocalName, StringComparer.Ordinal)
+                .ToDictionary(g => g.Key, g => NormalizeSeparators(g.First().Value), StringComparer.Ordinal));
     }
 
-    private static string NormalizeSeparators(string relativePath) =>
+    internal static string NormalizeSeparators(string relativePath) =>
         relativePath.Replace('\\', Path.DirectorySeparatorChar).Replace('/', Path.DirectorySeparatorChar);
 }

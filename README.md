@@ -46,7 +46,22 @@ dotnet run --project src/SqlSc.Cli -- status path/to/working-folder
 
 # Who changed what, from the default trace
 dotnet run --project src/SqlSc.Cli -- changes
+
+# Write changed objects from the database into the folder (deleting files of dropped objects)
+dotnet run --project src/SqlSc.Cli -- export path/to/working-folder Sales.Customer "[Sales].[GetCustomer]"
+dotnet run --project src/SqlSc.Cli -- export path/to/working-folder --all
+
+# Preview: the unified diff of each file export would write or delete, changing nothing
+dotnet run --project src/SqlSc.Cli -- export path/to/working-folder --all --dry-run
+
+# Export, then git commit exactly those files; anything else staged or changed is left alone
+dotnet run --project src/SqlSc.Cli -- commit path/to/working-folder -m "Add Customer.Email" Sales.Customer
+dotnet run --project src/SqlSc.Cli -- commit path/to/working-folder -m "My changes" --mine
 ```
+
+`export` writes one file per object in Redgate's layout (`Tables\Sales.Customer.sql`, `Stored Procedures\...`) with the
+object's keys, indexes, triggers, permissions and extended properties in the same file, UTF-8 and CRLF line endings.
+Database scoped credentials aren't exported, since their secrets can't be read back. `--mine` uses the default trace.
 
 Connection strings are plain `Microsoft.Data.SqlClient` ones, so SQL authentication, Windows authentication
 (`Integrated Security=true`) and Entra ID (`Authentication=Active Directory Default` or `Active Directory Interactive`) all work.
@@ -84,7 +99,7 @@ An optional `sql-sc.json` in the working folder holds settings shared by the tea
 
 | Path | |
 |---|---|
-| `src/SqlSc.Core` | Working folder reader, settings and links, filters, DacFx model loading, comparison, default trace reader, doctor |
+| `src/SqlSc.Core` | Working folder reader, settings and links, filters, DacFx model loading, comparison, default trace reader, doctor, export and commit |
 | `src/SqlSc.Cli` | `sql-sc` command-line tool |
 | `tests/SqlSc.Core.Tests` | Unit tests |
 | `tests/SqlSc.IntegrationTests` | Tests against SQL Server 2022 in Docker |

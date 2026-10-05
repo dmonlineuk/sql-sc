@@ -31,11 +31,14 @@ public sealed record DatabaseModelInfo(
             : FormattableString.Invariant($"; left out {leftOut.Count} untracked objects with unresolved references: {string.Join(", ", leftOut.Take(5))}{(leftOut.Count > 5 ? ", ..." : string.Empty)}");
 }
 
-public sealed class DatabaseModel(TSqlModel model, DatabaseModelInfo info) : IDisposable
+public sealed class DatabaseModel(TSqlModel model, DatabaseModelInfo info, IReadOnlyDictionary<string, string>? originalScripts = null) : IDisposable
 {
     public TSqlModel Model { get; } = model;
 
     public DatabaseModelInfo Info { get; } = info;
+
+    /// <summary>Scripts as the database has them, keyed by the trimmed script sql-sc gave DacFx in their place (see <see cref="ColumnNamedAliases"/>).</summary>
+    public IReadOnlyDictionary<string, string> OriginalScripts { get; } = originalScripts ?? new Dictionary<string, string>();
 
     public void Dispose() => Model.Dispose();
 }
@@ -61,21 +64,23 @@ public static class DatabaseModelLoader
         IReadOnlyList<string> unsupported = ["--full-extract requested"];
         if (!fullExtract)
         {
-            var (model, info) = TryLoadFromCatalog(connectionString, platform, filter, referencedNames);
+            var catalogOriginals = new Dictionary<string, string>(StringComparer.Ordinal);
+            var (model, info) = TryLoadFromCatalog(connectionString, platform, filter, referencedNames, catalogOriginals);
             if (model is not null)
             {
-                return new DatabaseModel(model, info);
+                return new DatabaseModel(model, info, catalogOriginals);
             }
 
             unsupported = info.Unsupported;
         }
 
-        var (full, leftOut) = LoadFull(connectionString, filter);
-        return new DatabaseModel(full, new DatabaseModelInfo(false, 0, 0, unsupported, stopwatch.Elapsed, leftOut));
+        var originals = new Dictionary<string, string>(StringComparer.Ordinal);
+        var (full, leftOut) = LoadFull(connectionString, filter, originals);
+        return new DatabaseModel(full, new DatabaseModelInfo(false, 0, 0, unsupported, stopwatch.Elapsed, leftOut), originals);
     }
 
     /// <summary>DacFx's full extract, without untracked objects that stop it being saved (see <see cref="BrokenObjects"/>).</summary>
-    public static (TSqlModel Model, IReadOnlyList<string> LeftOut) LoadFull(string connectionString, ObjectFilter filter)
+    public static (TSqlModel Model, IReadOnlyList<string> LeftOut) LoadFull(string connectionString, ObjectFilter filter, IDictionary<string, string>? originals = null)
     {
         var server = ServerInfo.Query(connectionString);
         var model = SystemDatabase.LoadFromDatabase(connectionString, server.DatabaseName, server.Platform, new DacExtractOptions
@@ -86,7 +91,7 @@ public static class DatabaseModelLoader
         SystemDatabase.AddMissingLogins(model);
         SystemDatabase.AddMissingMasterKey(model);
         NameTriggerTables(model, connectionString);
-        ColumnNamedAliases.Apply(model);
+        ColumnNamedAliases.Apply(model, originals);
         return (model, BrokenObjects.RemoveUntracked(model, filter));
     }
 
@@ -127,7 +132,8 @@ public static class DatabaseModelLoader
         string connectionString,
         SqlServerVersion platform,
         ObjectFilter filter,
-        IEnumerable<(string? Schema, string Name)> referencedNames)
+        IEnumerable<(string? Schema, string Name)> referencedNames,
+        IDictionary<string, string>? originals = null)
     {
         var stopwatch = Stopwatch.StartNew();
         CatalogSnapshot snapshot;
@@ -167,7 +173,8 @@ public static class DatabaseModelLoader
             }
 
             scripted = plan.ScriptedCount;
-            model = Build(plan, platform, snapshot.Collation, out var problems);
+            originals?.Clear();
+            model = Build(plan, platform, snapshot.Collation, originals, out var problems);
             if (problems.Count > 0)
             {
                 model.Dispose();
@@ -209,7 +216,7 @@ public static class DatabaseModelLoader
         return names;
     }
 
-    private static TSqlModel Build(ScriptPlan plan, SqlServerVersion platform, string collation, out List<string> problems)
+    private static TSqlModel Build(ScriptPlan plan, SqlServerVersion platform, string collation, IDictionary<string, string>? originals, out List<string> problems)
     {
         problems = [];
         var model = SystemDatabase.CreateModel(platform, new TSqlModelOptions { Collation = collation });
@@ -222,7 +229,7 @@ public static class DatabaseModelLoader
             try
             {
                 model.AddOrUpdateObjects(
-                    ColumnNamedAliases.Rewrite(string.Join("\nGO\n", units.Select(u => u.Script)), key.QuotedIdentifier),
+                    string.Join("\nGO\n", units.Select(u => ColumnNamedAliases.Rewrite(u.Script, key.QuotedIdentifier, originals))),
                     units[0].Source,
                     new TSqlObjectOptions { QuotedIdentifier = key.QuotedIdentifier, AnsiNulls = key.AnsiNulls });
             }
