@@ -39,5 +39,7 @@ public class ExportFormattingTests
     [InlineData("[Sales].[Customer]", "[Sales].[Customer]")]
     [InlineData("[My Schema].[A.B]", "[My Schema].[A.B]")]
     [InlineData("app_role", "[app_role]")]
+    [InlineData("Sales.Order", "[Sales].[Order]")]
+    [InlineData("[a]]b].\"c\"", "[a]b].[c]")]
     public void FormatsObjectNamesAsStatusDoes(string name, string expected) => Assert.Equal(expected, ExportService.FormatName(name));
 }

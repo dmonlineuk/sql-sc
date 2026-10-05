@@ -2,6 +2,7 @@ using System.CommandLine;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using SqlSc.Core.Apply;
 using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
 using SqlSc.Core.Database;
@@ -308,7 +309,53 @@ commit.SetAction(result =>
     return committed.Export.Problems.Count > 0 ? 1 : 0;
 });
 
-var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, link, doctor, export, commit };
+var applyObjectsArgument = new Argument<string[]>("objects") { Description = "Objects to apply, e.g. Sales.Customer or [Sales].[Customer]. Naming an object that is only in the database drops it.", Arity = ArgumentArity.ZeroOrMore };
+var applyAllOption = new Option<bool>("--all") { Description = "Every object that differs, except objects only in the database, which are dropped only when named." };
+var scriptOnlyOption = new Option<bool>("--script-only") { Description = "Print the deployment script and change nothing." };
+var allowDataLossOption = new Option<bool>("--allow-data-loss") { Description = "Allow changes that could lose data, such as dropping a column, or a table that has rows." };
+var forceOption = new Option<bool>("--force") { Description = "Apply objects even if another login made their last change in the database (needs the default trace)." };
+var apply = new Command("apply", "Deploy the working folder's version of objects to the database (Get latest). In shared mode this changes the database for everyone.")
+{
+    folderArgument, applyObjectsArgument, applyAllOption, scriptOnlyOption, allowDataLossOption, forceOption, connectionOption, fullExtractOption, jsonOption,
+};
+apply.SetAction(result =>
+{
+    var names = result.GetValue(applyObjectsArgument) ?? [];
+    var all = result.GetValue(applyAllOption);
+    if (all == names.Length > 0)
+    {
+        Console.Error.WriteLine(all ? "--all can't be combined with object names." : "Name the objects to apply, or pass --all.");
+        return 2;
+    }
+
+    if (Connect(result) is not var (folder, connection))
+    {
+        return 2;
+    }
+
+    var scriptOnly = result.GetValue(scriptOnlyOption);
+    var applied = ApplyService.Apply(
+        folder,
+        connection,
+        names,
+        all,
+        scriptOnly,
+        result.GetValue(allowDataLossOption),
+        result.GetValue(forceOption),
+        result.GetValue(fullExtractOption));
+    if (result.GetValue(jsonOption))
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new { applied.Objects, applied.Applied, applied.Problems, applied.Messages, applied.Script }, json));
+    }
+    else
+    {
+        WriteApply(applied, scriptOnly);
+    }
+
+    return applied.Problems.Count > 0 ? 1 : 0;
+});
+
+var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, link, doctor, export, commit, apply };
 try
 {
     return root.Parse(args).Invoke(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
@@ -378,6 +425,49 @@ static void WriteExport(ExportResult exported, bool dryRun = false)
     {
         Console.WriteLine();
         Console.WriteLine("Dry run: nothing was written or deleted.");
+    }
+}
+
+static void WriteApply(ApplyResult applied, bool scriptOnly)
+{
+    Console.WriteLine($"{applied.Status.Server}/{applied.Status.Database}");
+    if (applied.Objects.Count == 0 && applied.Problems.Count == 0)
+    {
+        Console.WriteLine("No differences.");
+    }
+
+    foreach (var obj in applied.Objects)
+    {
+        var who = obj.LastChange is { } e ? Invariant($"  last changed by {e.LoginName} {e.StartTime:yyyy-MM-dd HH:mm}") : "";
+        Console.WriteLine($"  {obj.Action,-7} {obj.ObjectType,-24} {obj.Name}{who}");
+    }
+
+    foreach (var problem in applied.Problems)
+    {
+        Console.WriteLine($"  Problem: {problem}");
+    }
+
+    if (scriptOnly && applied.Script is not null)
+    {
+        Console.WriteLine();
+        Console.WriteLine(applied.Script.TrimEnd());
+        Console.WriteLine();
+        Console.WriteLine("Script only: the database wasn't changed.");
+        return;
+    }
+
+    foreach (var message in applied.Messages)
+    {
+        Console.WriteLine($"    {message}");
+    }
+
+    if (applied.Applied)
+    {
+        Console.WriteLine(Invariant($"Applied {applied.Objects.Count} object(s)."));
+    }
+    else if (applied.Objects.Count > 0)
+    {
+        Console.WriteLine("Nothing was applied.");
     }
 }
 

@@ -1,6 +1,5 @@
 using System.Text;
 using Microsoft.Data.SqlClient;
-using Microsoft.SqlServer.TransactSql.ScriptDom;
 using SqlSc.Core.Comparison;
 using SqlSc.Core.Scripting;
 using SqlSc.Core.WorkingFolders;
@@ -156,7 +155,7 @@ public static class ExportService
         return new ExportResult(report, selected, planned.Select(p => p.File).ToList(), problems);
     }
 
-    private static List<ObjectChange> Select(StatusReport report, ExportSelection selection, string connectionString, List<string> problems)
+    internal static List<ObjectChange> Select(StatusReport report, ExportSelection selection, string connectionString, List<string> problems)
     {
         if (selection.All)
         {
@@ -193,13 +192,48 @@ public static class ExportService
     /// <summary>An object name as status reports it: <c>Sales.Customer</c> or <c>[Sales].[Customer]</c> becomes <c>[Sales].[Customer]</c>.</summary>
     public static string FormatName(string name)
     {
-        var parsed = new TSql170Parser(true).ParseSchemaObjectName(new StringReader(name), out var errors, 0, 1, 1);
-        return errors.Count > 0 || parsed is null
-            ? name
-            : string.Join('.', parsed.Identifiers.Select(i => $"[{i.Value}]"));
+        var parts = new List<string>();
+        var part = new StringBuilder();
+        var closing = (char?)null;
+        for (var i = 0; i < name.Length; i++)
+        {
+            var c = name[i];
+            if (closing is { } end)
+            {
+                if (c != end)
+                {
+                    part.Append(c);
+                }
+                else if (i + 1 < name.Length && name[i + 1] == end)
+                {
+                    part.Append(c);
+                    i++;
+                }
+                else
+                {
+                    closing = null;
+                }
+            }
+            else if (c is '[' or '"')
+            {
+                closing = c == '[' ? ']' : '"';
+            }
+            else if (c == '.')
+            {
+                parts.Add(part.ToString().Trim());
+                part.Clear();
+            }
+            else
+            {
+                part.Append(c);
+            }
+        }
+
+        parts.Add(part.ToString().Trim());
+        return closing is not null || parts.Any(p => p.Length == 0) ? name : string.Join('.', parts.Select(p => $"[{p}]"));
     }
 
-    private static string CurrentLogin(string connectionString)
+    internal static string CurrentLogin(string connectionString)
     {
         using var connection = new SqlConnection(connectionString);
         connection.Open();

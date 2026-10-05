@@ -57,11 +57,21 @@ dotnet run --project src/SqlSc.Cli -- export path/to/working-folder --all --dry-
 # Export, then git commit exactly those files; anything else staged or changed is left alone
 dotnet run --project src/SqlSc.Cli -- commit path/to/working-folder -m "Add Customer.Email" Sales.Customer
 dotnet run --project src/SqlSc.Cli -- commit path/to/working-folder -m "My changes" --mine
+
+# Get latest: deploy the folder's version of objects to the database. --script-only prints the script and changes nothing
+dotnet run --project src/SqlSc.Cli -- apply path/to/working-folder --all --script-only
+dotnet run --project src/SqlSc.Cli -- apply path/to/working-folder Sales.Customer "[Sales].[GetCustomer]"
 ```
 
 `export` writes one file per object in Redgate's layout (`Tables\Sales.Customer.sql`, `Stored Procedures\...`) with the
 object's keys, indexes, triggers, permissions and extended properties in the same file, UTF-8 and CRLF line endings.
 Database scoped credentials aren't exported, since their secrets can't be read back. `--mine` uses the default trace.
+
+`apply` runs DacFx's deployment script for the selected objects in one transaction, and rolls it back on any error. On a
+shared database this changes it for everyone. `--all` never drops objects that are only in the database; name one to drop
+it. Changes that could lose data (dropping a column, or a table with rows) stop the deployment unless you pass
+`--allow-data-loss`. Objects whose last change in the database was made by another login are refused unless you pass
+`--force`; this uses the default trace, so it isn't checked on Azure SQL Database or Hyperscale.
 
 Connection strings are plain `Microsoft.Data.SqlClient` ones, so SQL authentication, Windows authentication
 (`Integrated Security=true`) and Entra ID (`Authentication=Active Directory Default` or `Active Directory Interactive`) all work.
@@ -99,7 +109,7 @@ An optional `sql-sc.json` in the working folder holds settings shared by the tea
 
 | Path | |
 |---|---|
-| `src/SqlSc.Core` | Working folder reader, settings and links, filters, DacFx model loading, comparison, default trace reader, doctor, export and commit |
+| `src/SqlSc.Core` | Working folder reader, settings and links, filters, DacFx model loading, comparison, default trace reader, doctor, export, commit and apply |
 | `src/SqlSc.Cli` | `sql-sc` command-line tool |
 | `tests/SqlSc.Core.Tests` | Unit tests |
 | `tests/SqlSc.IntegrationTests` | Tests against SQL Server 2022 in Docker |

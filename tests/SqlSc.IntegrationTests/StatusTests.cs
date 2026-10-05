@@ -34,7 +34,7 @@ public class StatusTests(SqlServerFixture sql)
             SELECT CustomerId, Name, IsActive FROM Sales.Customer WHERE CustomerId = @CustomerId;
             -- trailing comment
             """;
-        var folder = CopyDemo();
+        var folder = SqlServerFixture.CopyDemo();
         var database = sql.CreateDatabaseFromFolder(folder);
         sql.Execute(database, "DROP PROCEDURE [Sales].[GetCustomer]");
         sql.Execute(database, definition);
@@ -147,7 +147,7 @@ public class StatusTests(SqlServerFixture sql)
     [InlineData("PK__Region__1111111122222222", true)]
     public void ExplicitConstraintNamesThatLookSystemGeneratedMatch(string folderName, bool modified)
     {
-        var folder = CopyDemo();
+        var folder = SqlServerFixture.CopyDemo();
         var database = sql.CreateDatabaseFromFolder(folder);
         sql.Execute(database, "CREATE TABLE [Sales].[Region] ([RegionId] int NOT NULL CONSTRAINT [PK__Region__3213E83F9AEF8E7A] PRIMARY KEY CLUSTERED, [Active] bit NOT NULL CONSTRAINT [DF__Region__Active__42501F7D] DEFAULT ((1)))");
         File.WriteAllText(Path.Combine(folder, "Tables", "Sales.Region.sql"), $"""
@@ -170,7 +170,7 @@ public class StatusTests(SqlServerFixture sql)
     [Fact]
     public void SystemNamedConstraintsScriptedWithTheirNamesMatch()
     {
-        var folder = CopyDemo();
+        var folder = SqlServerFixture.CopyDemo();
         var database = sql.CreateDatabaseFromFolder(folder);
         sql.Execute(database, "CREATE TABLE [Sales].[Region] ([RegionId] int NOT NULL PRIMARY KEY, [Code] nchar(2) NOT NULL UNIQUE, [Active] bit NOT NULL DEFAULT ((1)))");
         var names = new Dictionary<string, string>();
@@ -251,7 +251,7 @@ public class StatusTests(SqlServerFixture sql)
     [Fact]
     public void FilteredObjectsAreNotReported()
     {
-        var folder = CopyDemo();
+        var folder = SqlServerFixture.CopyDemo();
         File.WriteAllText(Path.Combine(folder, "Filter.scpf"), """
             <?xml version="1.0" encoding="utf-8"?>
             <NamedFilter version="1" type="SQLCompareFilter">
@@ -304,7 +304,7 @@ public class StatusTests(SqlServerFixture sql)
     [Fact]
     public void CatalogScriptingAndFullExtractReportTheSameChanges()
     {
-        var folder = CopyDemo();
+        var folder = SqlServerFixture.CopyDemo();
         File.WriteAllText(Path.Combine(folder, "Filter.scpf"), ScratchExcluded);
         var database = sql.CreateDatabaseFromFolder(folder);
         sql.Execute(database, "ALTER PROCEDURE [Sales].[GetCustomer] @CustomerId int AS SELECT @CustomerId AS CustomerId");
@@ -341,7 +341,7 @@ public class StatusTests(SqlServerFixture sql)
     [Fact]
     public void FullExtractLeavesOutUntrackedObjectsWithUnresolvedReferences()
     {
-        var folder = CopyDemo();
+        var folder = SqlServerFixture.CopyDemo();
         File.WriteAllText(Path.Combine(folder, "Filter.scpf"), ScratchExcluded);
         var database = sql.CreateDatabaseFromFolder(folder);
         sql.Execute(database, "CREATE SCHEMA [scratch]");
@@ -412,7 +412,7 @@ public class StatusTests(SqlServerFixture sql)
     [Fact]
     public void TableTypeColumnsWithTheDefaultCollationMatch()
     {
-        var folder = CopyDemo();
+        var folder = SqlServerFixture.CopyDemo();
         var database = sql.CreateDatabaseFromFolder(folder);
         sql.Execute(database, "CREATE TYPE [dbo].[ColumnList] AS TABLE ([TABLE_NAME] sysname NOT NULL, [IS_NULLABLE] varchar(3) NOT NULL)");
         Directory.CreateDirectory(Path.Combine(folder, "Types", "User-defined Data Types"));
@@ -434,7 +434,7 @@ public class StatusTests(SqlServerFixture sql)
     [Fact]
     public void TableVariableColumnsAreGroupedUnderTheirProcedure()
     {
-        var folder = CopyDemo();
+        var folder = SqlServerFixture.CopyDemo();
         File.WriteAllText(Path.Combine(folder, "Tables", "Sales.DataControl.sql"), "CREATE TABLE [Sales].[DataControl] ([Id] uniqueidentifier NOT NULL DEFAULT (newid()), [Filename] varchar(100) NULL)\r\nGO\r\n");
         var database = sql.CreateDatabaseFromFolder(folder);
         File.WriteAllText(Path.Combine(folder, "Stored Procedures", "Sales.NewDataControl.sql"), """
@@ -458,17 +458,4 @@ public class StatusTests(SqlServerFixture sql)
             .Select(c => $"{c.Status} {c.ObjectType} {c.Name} {c.File}: {string.Join(", ", c.Children.Select(child => $"{child.Status} {child.ObjectType} {child.Name}").Order(StringComparer.Ordinal))}")
             .Order(StringComparer.Ordinal)
             .ToList();
-
-    private static string CopyDemo()
-    {
-        var target = Path.Combine(Path.GetTempPath(), "sql-sc-tests", Guid.NewGuid().ToString("N"));
-        foreach (var file in Directory.EnumerateFiles(SqlServerFixture.DemoFolder, "*", SearchOption.AllDirectories))
-        {
-            var destination = Path.Combine(target, Path.GetRelativePath(SqlServerFixture.DemoFolder, file));
-            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-            File.Copy(file, destination);
-        }
-
-        return target;
-    }
 }

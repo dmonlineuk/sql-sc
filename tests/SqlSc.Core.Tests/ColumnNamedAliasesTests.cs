@@ -86,4 +86,16 @@ public class ColumnNamedAliasesTests
             DacPackageExtensions.BuildPackage(Path.Combine(folder, "model.dacpac"), model, new PackageMetadata { Name = "test" });
         }
     }
+
+    [Theory]
+    [InlineData("SELECT n.n FROM (VALUES (1),(2)) n(n)")]
+    [InlineData("SELECT [select].a FROM (VALUES (1)) [select](a, [select])")]
+    public void UndoReversesRewriteInADeploymentScript(string query)
+    {
+        var header = ":setvar DatabaseName \"Shop\"\nGO\nUSE [$(DatabaseName)];\nGO\n";
+        var rewritten = ColumnNamedAliases.Rewrite(query);
+
+        Assert.NotEqual(query, rewritten);
+        Assert.Equal(header + query, ColumnNamedAliases.Undo(header + rewritten));
+    }
 }
