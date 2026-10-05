@@ -61,6 +61,36 @@ public static class ColumnNamedAliases
     }
 
     /// <summary>
+    /// Reverses <see cref="Rewrite"/> in a script DacFx generated from rewritten scripts, such as a deployment script, so the
+    /// database gets the aliases the folder has.
+    /// </summary>
+    public static string Undo(string script)
+    {
+        if (!script.Contains(Suffix + "]", StringComparison.Ordinal))
+        {
+            return script;
+        }
+
+        var tokens = new TSql170Parser(true).GetTokenStream(new StringReader(script), out _);
+        var sb = new StringBuilder(script);
+        foreach (var token in tokens
+            .Where(t => t.TokenType == TSqlTokenType.QuotedIdentifier && t.Text.StartsWith('[') && t.Text.EndsWith(Suffix + "]", StringComparison.Ordinal))
+            .OrderByDescending(t => t.Offset))
+        {
+            var alias = token.Text[1..^(Suffix.Length + 1)].Replace("]]", "]", StringComparison.Ordinal);
+            sb.Remove(token.Offset, token.Text.Length)
+                .Insert(token.Offset, IsRegularIdentifier(alias) ? alias : "[" + alias.Replace("]", "]]", StringComparison.Ordinal) + "]");
+        }
+
+        return sb.ToString();
+    }
+
+    private static bool IsRegularIdentifier(string name) =>
+        new TSql170Parser(true).GetTokenStream(new StringReader(name), out var errors)
+            .Where(t => t.TokenType != TSqlTokenType.EndOfFile)
+            .ToList() is [{ TokenType: TSqlTokenType.Identifier }] && errors.Count == 0;
+
+    /// <summary>
     /// Rewrites modules in a model loaded from a .dacpac, where each module has a source of its own. Each rewritten script is
     /// recorded in <paramref name="originals"/> against the script it replaced.
     /// </summary>

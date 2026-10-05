@@ -27,6 +27,10 @@ public static class StatusService
     /// <summary>Types the default trace never reports by their own name.</summary>
     private static readonly HashSet<string> UntracedTypes = new(StringComparer.Ordinal) { "ExtendedProperty", "Permission", "RoleMembership" };
 
+    internal const string DatabasePackageName = "database.dacpac";
+
+    internal const string FolderPackageName = "folder.dacpac";
+
     public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false, bool includeDifferences = false)
     {
         using var session = Open(folder, connectionString, includeChangedBy, fullExtract, includeDifferences);
@@ -45,6 +49,7 @@ public static class StatusService
 
         var folderModel = FolderModelLoader.Load(folder, server.Platform, explicitConstraintNames);
         DatabaseModel? database = null;
+        var workDirectory = Path.Combine(Path.GetTempPath(), $"sql-sc-{Guid.NewGuid():N}");
         try
         {
             timings["loadFolder"] = Lap(stopwatch);
@@ -54,13 +59,19 @@ public static class StatusService
                 folder.Filter,
                 DatabaseModelLoader.UnresolvedNames(folderModel.Model),
                 fullExtract);
-            var report = BuildReport(folder, connectionString, server, folderModel, database, includeChangedBy, includeDifferences, timings, stopwatch);
-            return new StatusSession(folderModel, database, report);
+            Directory.CreateDirectory(workDirectory);
+            var report = BuildReport(folder, connectionString, server, folderModel, database, workDirectory, includeChangedBy, includeDifferences, timings, stopwatch);
+            return new StatusSession(folderModel, database, report, workDirectory);
         }
         catch
         {
             database?.Dispose();
             folderModel.Dispose();
+            if (Directory.Exists(workDirectory))
+            {
+                Directory.Delete(workDirectory, recursive: true);
+            }
+
             throw;
         }
     }
@@ -71,6 +82,7 @@ public static class StatusService
         ServerInfo server,
         FolderModel folderModel,
         DatabaseModel database,
+        string workDirectory,
         bool includeChangedBy,
         bool includeDifferences,
         Dictionary<string, TimeSpan> timings,
@@ -86,66 +98,57 @@ public static class StatusService
         var borrowed = DatabaseReferences.AddMissing(folderModel.Model, databaseModel);
         timings["resolveReferences"] = Lap(stopwatch);
 
-        var workDirectory = Path.Combine(Path.GetTempPath(), $"sql-sc-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(workDirectory);
+        var databasePackage = Path.Combine(workDirectory, DatabasePackageName);
+        var folderPackage = Path.Combine(workDirectory, FolderPackageName);
         try
         {
-            var databasePackage = Path.Combine(workDirectory, "database.dacpac");
-            var folderPackage = Path.Combine(workDirectory, "folder.dacpac");
-            try
-            {
-                DacPackageExtensions.BuildPackage(databasePackage, databaseModel, new PackageMetadata { Name = server.DatabaseName });
-            }
-            catch (DacServicesException ex)
-            {
-                throw new InvalidDataException($"The database model can't be saved ({database.Info.Describe()}). {Doctor.DescribeErrors(ex.Message)}", ex);
-            }
-
-            try
-            {
-                folderModel.BuildPackage(folderPackage, server.DatabaseName);
-            }
-            catch (DacServicesException ex)
-            {
-                throw new InvalidDataException($"The folder model can't be saved. {Doctor.DescribeErrors(ex.Message)}{DescribeCopied(ex.Message, borrowed)}", ex);
-            }
-
-            timings["buildPackage"] = Lap(stopwatch);
-
-            var compare = folder.Settings.Compare;
-            var collations = includeDifferences
-                ? new[] { databaseModel.CopyModelOptions().Collation, folderModel.Model.CopyModelOptions().Collation }
-                    .OfType<string>()
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToList()
-                : null;
-            var raw = Compare(databasePackage, folderPackage, compare.ToDeployOptions(), collations)
-                .Concat(borrowed.Objects.Select(o => new RawChange(ObjectStatus.New, o, FormatName(o.Name)!)))
-                .Where(r => compare.Includes(r.Object.ObjectType.Name))
-                .ToList();
-            timings["compare"] = Lap(stopwatch);
-
-            var changeLog = includeChangedBy
-                ? DefaultTraceReader.Read(connectionString)
-                : new ChangeLog(false, "Not requested.", []);
-            timings["changedBy"] = Lap(stopwatch);
-
-            return new StatusReport(
-                server.ServerName,
-                server.DatabaseName,
-                server.Platform.ToString(),
-                folderModel.ObjectCount,
-                folder.FilterPath,
-                folderModel.Issues,
-                Group(raw, files, folder.Filter, changeLog),
-                changeLog,
-                timings,
-                database.Info);
+            DacPackageExtensions.BuildPackage(databasePackage, databaseModel, new PackageMetadata { Name = server.DatabaseName });
         }
-        finally
+        catch (DacServicesException ex)
         {
-            Directory.Delete(workDirectory, recursive: true);
+            throw new InvalidDataException($"The database model can't be saved ({database.Info.Describe()}). {Doctor.DescribeErrors(ex.Message)}", ex);
         }
+
+        try
+        {
+            folderModel.BuildPackage(folderPackage, server.DatabaseName);
+        }
+        catch (DacServicesException ex)
+        {
+            throw new InvalidDataException($"The folder model can't be saved. {Doctor.DescribeErrors(ex.Message)}{DescribeCopied(ex.Message, borrowed)}", ex);
+        }
+
+        timings["buildPackage"] = Lap(stopwatch);
+
+        var compare = folder.Settings.Compare;
+        var collations = includeDifferences
+            ? new[] { databaseModel.CopyModelOptions().Collation, folderModel.Model.CopyModelOptions().Collation }
+                .OfType<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList()
+            : null;
+        var raw = Compare(databasePackage, folderPackage, compare.ToDeployOptions(), collations)
+            .Concat(borrowed.Objects.Select(o => new RawChange(ObjectStatus.New, o, FormatName(o.Name)!)))
+            .Where(r => compare.Includes(r.Object.ObjectType.Name))
+            .ToList();
+        timings["compare"] = Lap(stopwatch);
+
+        var changeLog = includeChangedBy
+            ? DefaultTraceReader.Read(connectionString)
+            : new ChangeLog(false, "Not requested.", []);
+        timings["changedBy"] = Lap(stopwatch);
+
+        return new StatusReport(
+            server.ServerName,
+            server.DatabaseName,
+            server.Platform.ToString(),
+            folderModel.ObjectCount,
+            folder.FilterPath,
+            folderModel.Issues,
+            Group(raw, files, folder.Filter, changeLog),
+            changeLog,
+            timings,
+            database.Info);
     }
 
     /// <summary>

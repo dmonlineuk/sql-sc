@@ -16,6 +16,20 @@ public sealed class SqlServerFixture : IAsyncLifetime
 
     public static string RichScript => Path.Combine(AppContext.BaseDirectory, "Fixtures", "Rich.sql");
 
+    /// <summary>A copy of the demo folder that a test can change.</summary>
+    public static string CopyDemo()
+    {
+        var target = Path.Combine(Path.GetTempPath(), "sql-sc-tests", Guid.NewGuid().ToString("N"));
+        foreach (var file in Directory.EnumerateFiles(DemoFolder, "*", SearchOption.AllDirectories))
+        {
+            var destination = Path.Combine(target, Path.GetRelativePath(DemoFolder, file));
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            File.Copy(file, destination);
+        }
+
+        return target;
+    }
+
     public Task InitializeAsync() => container.StartAsync();
 
     public Task DisposeAsync() => container.DisposeAsync().AsTask();
