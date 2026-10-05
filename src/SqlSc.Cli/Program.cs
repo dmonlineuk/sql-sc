@@ -254,10 +254,11 @@ var objectsArgument = new Argument<string[]>("objects") { Description = "Objects
 var allOption = new Option<bool>("--all") { Description = "Every object that differs between the database and the folder." };
 var mineOption = new Option<bool>("--mine") { Description = "Objects whose last change in the database was made by your login (needs the default trace)." };
 var messageOption = new Option<string>("--message", "-m") { Description = "Commit message.", Required = true };
+var dryRunOption = new Option<bool>("--dry-run") { Description = "Show the diff of each file export would write or delete, without changing anything." };
 
 var export = new Command("export", "Write objects from the database into the working folder. Files of objects dropped from the database are deleted.")
 {
-    folderArgument, objectsArgument, allOption, mineOption, connectionOption, fullExtractOption, jsonOption,
+    folderArgument, objectsArgument, allOption, mineOption, dryRunOption, connectionOption, fullExtractOption, jsonOption,
 };
 export.SetAction(result =>
 {
@@ -266,14 +267,15 @@ export.SetAction(result =>
         return 2;
     }
 
-    var exported = ExportService.Export(folder, connection, selection, result.GetValue(fullExtractOption));
+    var dryRun = result.GetValue(dryRunOption);
+    var exported = ExportService.Export(folder, connection, selection, result.GetValue(fullExtractOption), dryRun: dryRun);
     if (result.GetValue(jsonOption))
     {
         Console.WriteLine(JsonSerializer.Serialize(new { exported.Files, exported.Problems }, json));
     }
     else
     {
-        WriteExport(exported);
+        WriteExport(exported, dryRun);
     }
 
     return exported.Problems.Count > 0 ? 1 : 0;
@@ -343,7 +345,7 @@ ExportSelection? Selection(ParseResult result)
     return ResolveConnection(result.GetValue(connectionOption), folderPath) is { } connection ? (WorkingFolder.Open(folderPath), connection) : null;
 }
 
-static void WriteExport(ExportResult exported)
+static void WriteExport(ExportResult exported, bool dryRun = false)
 {
     if (exported.Selected.Count == 0 && exported.Problems.Count == 0)
     {
@@ -352,12 +354,30 @@ static void WriteExport(ExportResult exported)
 
     foreach (var file in exported.Files)
     {
-        Console.WriteLine($"  {file.Action,-9} {file.Path}");
+        var action = (dryRun, file.Action) switch
+        {
+            (true, FileAction.Written) => "Would write",
+            (true, FileAction.Deleted) => "Would delete",
+            _ => file.Action.ToString(),
+        };
+        Console.WriteLine($"  {action,-12} {file.Path}");
     }
 
     foreach (var problem in exported.Problems)
     {
         Console.WriteLine($"  Problem: {problem}");
+    }
+
+    foreach (var file in exported.Files.Where(f => f.Diff is not null))
+    {
+        Console.WriteLine();
+        Console.Write(file.Diff!.Length > 0 ? file.Diff : $"{file.Path}: only line endings change.\n");
+    }
+
+    if (dryRun)
+    {
+        Console.WriteLine();
+        Console.WriteLine("Dry run: nothing was written or deleted.");
     }
 }
 

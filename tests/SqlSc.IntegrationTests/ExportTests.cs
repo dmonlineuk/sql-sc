@@ -74,6 +74,36 @@ public class ExportTests(SqlServerFixture sql)
     }
 
     [Fact]
+    public void DryRunShowsDiffsAndChangesNothing()
+    {
+        var folder = CopyDemo();
+        var database = sql.CreateDatabaseFromFolder(folder);
+        sql.Execute(database, "ALTER PROCEDURE [Sales].[GetCustomer] @CustomerId int AS SELECT Name FROM Sales.Customer WHERE CustomerId = @CustomerId");
+        sql.Execute(database, "CREATE TABLE [Sales].[Order] ([OrderId] int NOT NULL CONSTRAINT [PK_Order] PRIMARY KEY)");
+        sql.Execute(database, "DROP VIEW [Sales].[ActiveCustomer]");
+        var before = Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).ToDictionary(f => f, File.ReadAllText);
+
+        var exported = ExportService.Export(WorkingFolder.Open(folder), sql.ConnectionString(database), new ExportSelection([], All: true), dryRun: true);
+
+        Assert.True(exported.Problems.Count == 0, string.Join(Environment.NewLine, exported.Problems));
+        var files = exported.Files.ToDictionary(f => f.Path.Replace('\\', '/'));
+        Assert.Equal(FileAction.Written, files["Stored Procedures/Sales.GetCustomer.sql"].Action);
+        Assert.Contains("+++ b/Stored Procedures/Sales.GetCustomer.sql\n", files["Stored Procedures/Sales.GetCustomer.sql"].Diff, StringComparison.Ordinal);
+        Assert.Contains("\n+", files["Stored Procedures/Sales.GetCustomer.sql"].Diff, StringComparison.Ordinal);
+        Assert.Contains("\n-", files["Stored Procedures/Sales.GetCustomer.sql"].Diff, StringComparison.Ordinal);
+        Assert.StartsWith("--- /dev/null\n+++ b/Tables/Sales.Order.sql\n@@ -0,0 ", files["Tables/Sales.Order.sql"].Diff, StringComparison.Ordinal);
+        Assert.Contains("+CREATE TABLE [Sales].[Order]", files["Tables/Sales.Order.sql"].Diff, StringComparison.Ordinal);
+        Assert.Equal(FileAction.Deleted, files["Views/Sales.ActiveCustomer.sql"].Action);
+        Assert.StartsWith("--- a/Views/Sales.ActiveCustomer.sql\n+++ /dev/null\n", files["Views/Sales.ActiveCustomer.sql"].Diff, StringComparison.Ordinal);
+        Assert.Equal(before, Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories).ToDictionary(f => f, File.ReadAllText));
+
+        var written = ExportService.Export(WorkingFolder.Open(folder), sql.ConnectionString(database), new ExportSelection([], All: true));
+
+        Assert.Equal(exported.Files.Select(f => (f.Path, f.Action)), written.Files.Select(f => (f.Path, f.Action)));
+        Assert.All(written.Files, f => Assert.Null(f.Diff));
+    }
+
+    [Fact]
     public void ReportsNamesWithNoDifferences()
     {
         var folder = CopyDemo();

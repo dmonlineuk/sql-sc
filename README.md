@@ -51,6 +51,9 @@ dotnet run --project src/SqlSc.Cli -- changes
 dotnet run --project src/SqlSc.Cli -- export path/to/working-folder Sales.Customer "[Sales].[GetCustomer]"
 dotnet run --project src/SqlSc.Cli -- export path/to/working-folder --all
 
+# Preview: the unified diff of each file export would write or delete, changing nothing
+dotnet run --project src/SqlSc.Cli -- export path/to/working-folder --all --dry-run
+
 # Export, then git commit exactly those files; anything else staged or changed is left alone
 dotnet run --project src/SqlSc.Cli -- commit path/to/working-folder -m "Add Customer.Email" Sales.Customer
 dotnet run --project src/SqlSc.Cli -- commit path/to/working-folder -m "My changes" --mine

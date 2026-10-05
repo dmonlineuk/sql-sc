@@ -17,8 +17,11 @@ public enum FileAction
     Unchanged,
 }
 
-/// <summary>A script file export wrote or deleted. <see cref="Path"/> is relative to the working folder.</summary>
-public sealed record ExportedFile(string Path, FileAction Action, IReadOnlyList<string> Objects);
+/// <summary>
+/// A script file export wrote or deleted. <see cref="Path"/> is relative to the working folder. <see cref="Diff"/> is the unified diff
+/// of the change on a dry run (empty if only line endings change), otherwise null.
+/// </summary>
+public sealed record ExportedFile(string Path, FileAction Action, IReadOnlyList<string> Objects, string? Diff = null);
 
 public sealed record ExportResult(
     StatusReport Status,
@@ -32,12 +35,14 @@ public static class ExportService
     private static readonly UTF8Encoding Utf8 = new(encoderShouldEmitUTF8Identifier: false);
 
     /// <param name="writeIfProblems">Whether to write the files that can be exported when others can't.</param>
+    /// <param name="dryRun">Whether to only work out each file's <see cref="ExportedFile.Diff"/>, writing and deleting nothing.</param>
     public static ExportResult Export(
         WorkingFolder folder,
         string connectionString,
         ExportSelection selection,
         bool fullExtract = false,
-        bool writeIfProblems = true)
+        bool writeIfProblems = true,
+        bool dryRun = false)
     {
         using var session = StatusService.Open(folder, connectionString, includeChangedBy: selection.Mine, fullExtract);
         var report = session.Report;
@@ -120,18 +125,17 @@ public static class ExportService
 
             var fullPath = Path.Combine(folder.RootPath, path);
             var objects = keys.Select(k => k.Name).ToList();
-            if (statements.Count == 0)
-            {
-                planned.Add((new ExportedFile(path, File.Exists(fullPath) ? FileAction.Deleted : FileAction.Unchanged, objects), null));
-                continue;
-            }
-
-            var text = ScriptFileWriter.Write(statements);
-            var unchanged = File.Exists(fullPath) && File.ReadAllText(fullPath) == text;
-            planned.Add((new ExportedFile(path, unchanged ? FileAction.Unchanged : FileAction.Written, objects), text));
+            var existing = File.Exists(fullPath) ? File.ReadAllText(fullPath) : null;
+            var text = statements.Count == 0 ? null : ScriptFileWriter.Write(statements);
+            var action = existing == text ? FileAction.Unchanged : text is null ? FileAction.Deleted : FileAction.Written;
+            var label = path.Replace('\\', '/');
+            var diff = dryRun && action != FileAction.Unchanged
+                ? UnifiedDiff.Create(existing, text, existing is null ? UnifiedDiff.NoFile : "a/" + label, text is null ? UnifiedDiff.NoFile : "b/" + label)
+                : null;
+            planned.Add((new ExportedFile(path, action, objects, diff), text));
         }
 
-        if (problems.Count == 0 || writeIfProblems)
+        if (!dryRun && (problems.Count == 0 || writeIfProblems))
         {
             foreach (var (file, text) in planned)
             {
