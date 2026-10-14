@@ -46,6 +46,12 @@ public class ConnectionStringsTests
         Assert.Equal(expected, ConnectionStrings.NeedsPassword(connection));
     }
 
+    [Fact]
+    public void PasswordPromptNamesUserAndServer()
+    {
+        Assert.Equal("Password for dan on tcp:s,1433: ", ConnectionStrings.PasswordPrompt("Server=tcp:s,1433;Database=d;User ID=dan"));
+    }
+
     [Theory]
     [InlineData("Server=s;Database=d;User ID=dan;Password=secret", "SQL (dan)")]
     [InlineData("Server=s;Database=d;Integrated Security=true", "Windows (integrated)")]

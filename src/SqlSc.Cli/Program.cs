@@ -1,5 +1,6 @@
 using System.CommandLine;
 using System.Globalization;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using SqlSc.Core.Apply;
@@ -27,7 +28,7 @@ var connectionOption = new Option<string?>("--connection", "-c")
     Description = "SQL Server connection string. Defaults to the SQLSC_CONNECTION environment variable, then the folder's link. "
         + "Use -c on its own to take it from SQLSC_CONNECTION. "
         + "Supports SQL auth, Integrated Security=true and Authentication=Active Directory Default/Interactive. "
-        + "SQL auth passwords can come from SQLSC_PASSWORD.",
+        + "SQL auth passwords come from SQLSC_PASSWORD, or are asked for when it isn't set.",
     Arity = ArgumentArity.ZeroOrOne,
 };
 var modeOption = new Option<DatabaseMode>("--mode") { Description = "shared (one database for the team) or dedicated (your own database).", DefaultValueFactory = _ => DatabaseMode.Shared };
@@ -205,7 +206,7 @@ link.SetAction(result =>
     Console.WriteLine($"Saved in {store.FilePath}.");
     if (removed)
     {
-        Console.WriteLine($"The password was not saved. Set {ConnectionStrings.PasswordVariable} before running sql-sc.");
+        Console.WriteLine($"The password was not saved. sql-sc will ask for it, or set {ConnectionStrings.PasswordVariable}.");
     }
 
     return 0;
@@ -484,7 +485,33 @@ static string? ResolveConnection(string? value, string folder, bool required = t
         return null;
     }
 
-    return ConnectionStrings.WithPassword(connection, Environment.GetEnvironmentVariable(ConnectionStrings.PasswordVariable));
+    connection = ConnectionStrings.WithPassword(connection, Environment.GetEnvironmentVariable(ConnectionStrings.PasswordVariable));
+    if (ConnectionStrings.NeedsPassword(connection) && !Console.IsInputRedirected)
+    {
+        Console.Error.Write(ConnectionStrings.PasswordPrompt(connection));
+        connection = ConnectionStrings.WithPassword(connection, ReadPassword());
+    }
+
+    return connection;
+}
+
+static string ReadPassword()
+{
+    var password = new StringBuilder();
+    while (Console.ReadKey(intercept: true) is var key && key.Key != ConsoleKey.Enter)
+    {
+        if (key.Key == ConsoleKey.Backspace)
+        {
+            password.Length = Math.Max(0, password.Length - 1);
+        }
+        else if (!char.IsControl(key.KeyChar))
+        {
+            password.Append(key.KeyChar);
+        }
+    }
+
+    Console.Error.WriteLine();
+    return password.ToString();
 }
 
 static void WriteIssues(IReadOnlyList<LoadIssue> issues)

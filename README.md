@@ -79,7 +79,8 @@ Add `--json` to any command for machine-readable output.
 
 The connection comes from `--connection`, then `SQLSC_CONNECTION`, then the link for the folder (or the closest linked
 parent folder). Links are stored in `%APPDATA%\sql-sc\links.json` on Windows and `~/.config/sql-sc/links.json` on Linux
-(`SQLSC_HOME` overrides the folder). `link` never saves a password: for SQL authentication set `SQLSC_PASSWORD`.
+(`SQLSC_HOME` overrides the folder). `link` never saves a password: for SQL authentication sql-sc asks for it, or set `SQLSC_PASSWORD` (needed when input is
+redirected, e.g. in scripts).
 
 "Changed by" reads SQL Server's default trace and needs `ALTER TRACE` permission; without it, status still works.
 
