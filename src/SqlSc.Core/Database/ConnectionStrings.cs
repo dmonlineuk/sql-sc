@@ -37,6 +37,13 @@ public static class ConnectionStrings
             && builder.Authentication is SqlAuthenticationMethod.NotSpecified or SqlAuthenticationMethod.SqlPassword;
     }
 
+    /// <summary>The prompt for a SQL-auth password, naming the user and server but not the database.</summary>
+    public static string PasswordPrompt(string connectionString)
+    {
+        var builder = new SqlConnectionStringBuilder(connectionString);
+        return $"Password for {builder.UserID} on {builder.DataSource}: ";
+    }
+
     public static string DescribeAuthentication(string connectionString)
     {
         var builder = new SqlConnectionStringBuilder(connectionString);
