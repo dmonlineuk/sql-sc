@@ -9,6 +9,7 @@ using SqlSc.Core.Filtering;
 using SqlSc.Core.Modeling;
 using SqlSc.Core.Scripting;
 using SqlSc.Core.Settings;
+using SqlSc.Core.StaticData;
 using SqlSc.Core.WorkingFolders;
 
 namespace SqlSc.Core.Comparison;
@@ -138,6 +139,9 @@ public static class StatusService
             : new ChangeLog(false, "Not requested.", []);
         timings["changedBy"] = Lap(stopwatch);
 
+        var data = StaticDataService.Compare(folder, connectionString);
+        timings["data"] = Lap(stopwatch);
+
         return new StatusReport(
             server.ServerName,
             server.DatabaseName,
@@ -148,7 +152,8 @@ public static class StatusService
             Group(raw, files, folder.Filter, changeLog),
             changeLog,
             timings,
-            database.Info);
+            database.Info,
+            data);
     }
 
     /// <summary>
