@@ -4,13 +4,16 @@ using SqlSc.Core.Scripting;
 namespace SqlSc.Core.Comparison;
 
 /// <summary>A status comparison with the two models it was made from and their packages, which are deleted on dispose.</summary>
-internal sealed class StatusSession(FolderModel folder, DatabaseModel database, StatusReport report, string workDirectory) : IDisposable
+internal sealed class StatusSession(FolderModel folder, DatabaseModel database, StatusReport report, string workDirectory, Baseline? baseline) : IDisposable
 {
     public FolderModel Folder { get; } = folder;
 
     public DatabaseModel Database { get; } = database;
 
     public StatusReport Report { get; } = report;
+
+    /// <summary>The baseline, or null if none is kept.</summary>
+    public Baseline? Baseline { get; } = baseline;
 
     /// <summary>The database model as a .dacpac.</summary>
     public string DatabasePackage { get; } = Path.Combine(workDirectory, StatusService.DatabasePackageName);

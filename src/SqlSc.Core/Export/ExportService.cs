@@ -9,7 +9,11 @@ namespace SqlSc.Core.Export;
 
 /// <summary>Which changed objects to export: those named, every changed object, or those last changed by the current login.</summary>
 /// <param name="Data">Include the rows of selected static data tables; without it only their schema is selected.</param>
-public sealed record ExportSelection(IReadOnlyList<string> Names, bool All = false, bool Mine = false, bool Data = false);
+/// <param name="Force">Export objects even if that undoes a change made in the folder since it last matched the database.</param>
+public sealed record ExportSelection(IReadOnlyList<string> Names, bool All = false, bool Mine = false, bool Data = false, bool Force = false)
+{
+    internal IReadOnlySet<string> NamedObjects => Names.Select(ExportService.FormatName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+}
 
 public enum FileAction
 {
@@ -24,12 +28,14 @@ public enum FileAction
 /// </summary>
 public sealed record ExportedFile(string Path, FileAction Action, IReadOnlyList<string> Objects, string? Diff = null);
 
+/// <summary><see cref="Skipped"/> says why objects picked by <c>--all</c> or <c>--mine</c> were left out.</summary>
 public sealed record ExportResult(
     StatusReport Status,
     IReadOnlyList<ObjectChange> Selected,
     IReadOnlyList<DataChange> SelectedData,
     IReadOnlyList<ExportedFile> Files,
-    IReadOnlyList<string> Problems);
+    IReadOnlyList<string> Problems,
+    IReadOnlyList<string> Skipped);
 
 /// <summary>Writes changed objects from the database into the working folder, one file per object as Redgate lays them out.</summary>
 public static class ExportService
@@ -38,18 +44,21 @@ public static class ExportService
 
     /// <param name="writeIfProblems">Whether to write the files that can be exported when others can't.</param>
     /// <param name="dryRun">Whether to only work out each file's <see cref="ExportedFile.Diff"/>, writing and deleting nothing.</param>
+    /// <param name="baseline">Where the baseline is kept; null to keep none.</param>
     public static ExportResult Export(
         WorkingFolder folder,
         string connectionString,
         ExportSelection selection,
         bool fullExtract = false,
         bool writeIfProblems = true,
-        bool dryRun = false)
+        bool dryRun = false,
+        BaselineStore? baseline = null)
     {
-        using var session = StatusService.Open(folder, connectionString, includeChangedBy: selection.Mine, fullExtract);
+        using var session = StatusService.Open(folder, connectionString, includeChangedBy: selection.Mine, fullExtract, baselineStore: baseline);
         var report = session.Report;
         var problems = new List<string>();
-        var selected = Select(report, selection, connectionString, problems);
+        var skipped = new List<string>();
+        var selected = SideGuard.Filter(Select(report, selection, connectionString, problems), ChangeSide.Folder, selection.NamedObjects, selection.Force, problems, skipped);
         var selectedData = SelectData(report, selection, problems);
 
         var database = ObjectFiles.Group(session.Database.Model);
@@ -95,7 +104,7 @@ public static class ExportService
             (byFile.TryGetValue(path, out var list) ? list : byFile[path] = []).Add(key);
         }
 
-        var planned = new List<(ExportedFile File, string? Text)>();
+        var planned = new List<(ExportedFile File, string? Text, IReadOnlyList<(string ObjectType, string Name)> Keys)>();
         foreach (var (path, keys) in byFile.OrderBy(f => f.Key, StringComparer.OrdinalIgnoreCase))
         {
             var inFile = folderOwners.Values
@@ -126,7 +135,8 @@ public static class ExportService
                 continue;
             }
 
-            planned.Add(Plan(folder, path, statements.Count == 0 ? null : ScriptFileWriter.Write(statements), [.. keys.Select(k => k.Name)], dryRun));
+            var (file, text) = Plan(folder, path, statements.Count == 0 ? null : ScriptFileWriter.Write(statements), [.. keys.Select(k => k.Name)], dryRun);
+            planned.Add((file, text, keys));
         }
 
         if (selectedData.Count > 0)
@@ -148,13 +158,14 @@ public static class ExportService
                     continue;
                 }
 
-                planned.Add(Plan(folder, table.File, text, [change.Table], dryRun));
+                var (file, script) = Plan(folder, table.File, text, [change.Table], dryRun);
+                planned.Add((file, script, []));
             }
         }
 
         if (!dryRun && (problems.Count == 0 || writeIfProblems))
         {
-            foreach (var (file, text) in planned)
+            foreach (var (file, text, keys) in planned)
             {
                 var fullPath = Path.Combine(folder.RootPath, file.Path);
                 switch (file.Action)
@@ -167,10 +178,17 @@ public static class ExportService
                         File.WriteAllText(fullPath, text, HasByteOrderMark(fullPath) ? new UTF8Encoding(true) : Utf8);
                         break;
                 }
+
+                if (file.Action != FileAction.Unchanged)
+                {
+                    session.Baseline?.Exported(keys, text);
+                }
             }
+
+            session.Baseline?.Save();
         }
 
-        return new ExportResult(report, selected, selectedData, planned.Select(p => p.File).ToList(), problems);
+        return new ExportResult(report, selected, selectedData, planned.Select(p => p.File).ToList(), problems, skipped);
     }
 
     /// <summary>

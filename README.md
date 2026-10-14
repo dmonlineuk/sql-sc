@@ -82,6 +82,15 @@ it. Changes that could lose data (dropping a column, or a table with rows) stop 
 `--allow-data-loss`. Objects whose last change in the database was made by another login are refused unless you pass
 `--force`; this uses the change log or the default trace, so on Azure SQL Database or Hyperscale it needs the change log.
 
+sql-sc keeps a baseline of each object from the last time the database and the folder matched, so `status` can say where
+each difference came from ("Changed in"): `Database` (changed on the server since), `Folder` (changed in the folder, e.g.
+by a git pull) or `Conflict` (changed on both). `export` and `commit` won't overwrite a folder-side change, and `apply`
+won't undo a database-side change, such as a column someone added on the server: `--all` skips them and says so, and
+naming one is refused. Conflicts are always refused; keep the database version with `export <object> --force` or the
+folder version with `apply <object> --force`. The baseline is recorded whenever `status`, `export`, `commit` or `apply`
+sees an object match or makes it match, so differences show as `Unknown` until then. It's per user, in `baselines` next to
+`links.json`, and comparing script text ignores layout.
+
 Static data tables need a primary key; `data link` warns above 10,000 rows. `export`, `commit` and `apply` only include
 their rows with `--data`; without it they handle schema only. `status` compares the rows by primary key
 (`--diff` lists them) by loading the folder's script into a temporary table, so only `#` tables are written. `export`

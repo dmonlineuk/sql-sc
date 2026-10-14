@@ -26,7 +26,7 @@ public sealed record AppliedObject(ApplyAction Action, string ObjectType, string
 /// <summary>
 /// <see cref="Script"/> is DacFx's deployment script for the selected objects (SQLCMD mode), or null if there was nothing to script.
 /// <see cref="Data"/> are the static data tables whose rows change, and <see cref="DataScript"/> their script on a script-only run.
-/// <see cref="Applied"/> is whether the changes were made.
+/// <see cref="Applied"/> is whether the changes were made. <see cref="Skipped"/> says why objects picked by <c>--all</c> were left out.
 /// </summary>
 public sealed record ApplyResult(
     StatusReport Status,
@@ -36,7 +36,8 @@ public sealed record ApplyResult(
     IReadOnlyList<string> Problems,
     bool Applied,
     IReadOnlyList<AppliedData> Data,
-    string? DataScript = null);
+    string? DataScript = null,
+    IReadOnlyList<string>? Skipped = null);
 
 /// <summary>
 /// Deploys the working folder's version of selected objects and static data to the database (Get latest).
@@ -51,7 +52,11 @@ public static class ApplyService
     /// <param name="data">Include the static data of selected tables; without it only schema is applied.</param>
     /// <param name="scriptOnly">Generate the script without running it.</param>
     /// <param name="allowDataLoss">Allow changes that could lose data, such as dropping a column or a table with rows.</param>
-    /// <param name="force">Overwrite objects whose last change in the database was made by another login.</param>
+    /// <param name="force">
+    /// Overwrite objects whose last change in the database was made by another login, or that changed in the database since they
+    /// last matched the folder.
+    /// </param>
+    /// <param name="baseline">Where the baseline is kept; null to keep none.</param>
     public static ApplyResult Apply(
         WorkingFolder folder,
         string connectionString,
@@ -61,14 +66,21 @@ public static class ApplyService
         bool scriptOnly = false,
         bool allowDataLoss = false,
         bool force = false,
-        bool fullExtract = false)
+        bool fullExtract = false,
+        BaselineStore? baseline = null)
     {
-        using var session = StatusService.Open(folder, connectionString, includeChangedBy: true, fullExtract);
+        using var session = StatusService.Open(folder, connectionString, includeChangedBy: true, fullExtract, baselineStore: baseline);
         var report = session.Report;
         var problems = new List<string>();
-        var selected = ExportService.Select(report, new ExportSelection(names, all, Data: data), connectionString, problems)
-            .Where(c => !all || c.Status != ObjectStatus.New)
-            .ToList();
+        var skipped = new List<string>();
+        var selection = new ExportSelection(names, all, Data: data);
+        var selected = SideGuard.Filter(
+            ExportService.Select(report, selection, connectionString, problems).Where(c => !all || c.Status != ObjectStatus.New),
+            ChangeSide.Database,
+            selection.NamedObjects,
+            force,
+            problems,
+            skipped);
         if (!force && report.ChangeLog.Available && selected.Any(c => c.LastChange?.LoginName is not null))
         {
             var login = ExportService.CurrentLogin(connectionString);
@@ -101,13 +113,13 @@ public static class ApplyService
             .ToList();
         if (selected.Count == 0 && dataTables.Count == 0)
         {
-            return new ApplyResult(report, objects, null, [], problems, false, appliedData);
+            return new ApplyResult(report, objects, null, [], problems, false, appliedData, Skipped: skipped);
         }
 
         var script = selected.Count == 0 ? null : SchemaScript(folder, session, objects, selected, allowDataLoss, problems);
         if (selected.Count > 0 && script is null)
         {
-            return new ApplyResult(report, objects, null, [], problems, false, appliedData);
+            return new ApplyResult(report, objects, null, [], problems, false, appliedData, Skipped: skipped);
         }
 
         string? dataScript = null;
@@ -128,7 +140,7 @@ public static class ApplyService
         var messages = new List<string>();
         if (scriptOnly || problems.Count > 0)
         {
-            return new ApplyResult(report, objects, script, messages, problems, false, appliedData, dataScript);
+            return new ApplyResult(report, objects, script, messages, problems, false, appliedData, dataScript, skipped);
         }
 
         if (script is not null)
@@ -136,11 +148,13 @@ public static class ApplyService
             try
             {
                 SqlCmdScript.Run(connectionString, script, messages);
+                session.Baseline?.Applied(objects.Select(o => (o.ObjectType, o.Name, o.Action == ApplyAction.Drop)));
+                session.Baseline?.Save();
             }
             catch (SqlException ex)
             {
                 problems.Add($"Applying failed, and its transaction was rolled back: {ex.Message}");
-                return new ApplyResult(report, objects, script, messages, problems, false, appliedData);
+                return new ApplyResult(report, objects, script, messages, problems, false, appliedData, Skipped: skipped);
             }
         }
 
@@ -154,11 +168,11 @@ public static class ApplyService
             {
                 var schema = script is null ? "" : " The schema changes were applied.";
                 problems.Add($"Applying static data failed, and its transaction was rolled back.{schema} {ex.Message}");
-                return new ApplyResult(report, objects, script, messages, problems, script is not null, appliedData);
+                return new ApplyResult(report, objects, script, messages, problems, script is not null, appliedData, Skipped: skipped);
             }
         }
 
-        return new ApplyResult(report, objects, script, messages, problems, true, appliedData);
+        return new ApplyResult(report, objects, script, messages, problems, true, appliedData, Skipped: skipped);
     }
 
     /// <summary>DacFx's deployment script for the selected objects, or null if it can't be generated (the reasons are added to <paramref name="problems"/>).</summary>

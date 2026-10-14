@@ -32,14 +32,27 @@ public static class StatusService
 
     internal const string FolderPackageName = "folder.dacpac";
 
-    public static StatusReport GetStatus(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false, bool includeDifferences = false)
+    /// <param name="baseline">Where to keep the baseline that tells which side each difference is on; null to keep none.</param>
+    public static StatusReport GetStatus(
+        WorkingFolder folder,
+        string connectionString,
+        bool includeChangedBy = true,
+        bool fullExtract = false,
+        bool includeDifferences = false,
+        BaselineStore? baseline = null)
     {
-        using var session = Open(folder, connectionString, includeChangedBy, fullExtract, includeDifferences);
+        using var session = Open(folder, connectionString, includeChangedBy, fullExtract, includeDifferences, baseline);
         return session.Report;
     }
 
     /// <summary>Compares the database with the folder, keeping both models for callers that go on to use them.</summary>
-    internal static StatusSession Open(WorkingFolder folder, string connectionString, bool includeChangedBy = true, bool fullExtract = false, bool includeDifferences = false)
+    internal static StatusSession Open(
+        WorkingFolder folder,
+        string connectionString,
+        bool includeChangedBy = true,
+        bool fullExtract = false,
+        bool includeDifferences = false,
+        BaselineStore? baselineStore = null)
     {
         var timings = new Dictionary<string, TimeSpan>();
         var stopwatch = Stopwatch.StartNew();
@@ -62,7 +75,21 @@ public static class StatusService
                 fullExtract);
             Directory.CreateDirectory(workDirectory);
             var report = BuildReport(folder, connectionString, server, folderModel, database, workDirectory, includeChangedBy, includeDifferences, timings, stopwatch);
-            return new StatusSession(folderModel, database, report, workDirectory);
+            Baseline? baseline = null;
+            if (baselineStore is not null)
+            {
+                baseline = Baseline.Load(baselineStore, folder, server.ServerName, server.DatabaseName, database, folderModel);
+                report = report with { Changes = report.Changes.Select(c => c with { Side = baseline.SideOf(c) }).ToList() };
+                if (!folderModel.HasErrors)
+                {
+                    baseline.Refresh(report.Changes);
+                    baseline.Save();
+                }
+
+                timings["baseline"] = Lap(stopwatch);
+            }
+
+            return new StatusSession(folderModel, database, report, workDirectory, baseline);
         }
         catch
         {
