@@ -44,8 +44,12 @@ dotnet run --project src/SqlSc.Cli -- doctor path/to/working-folder
 # Compare the database with its working folder
 dotnet run --project src/SqlSc.Cli -- status path/to/working-folder
 
-# Who changed what, from the default trace
+# Who changed what, from the change log if it's installed, otherwise the default trace
 dotnet run --project src/SqlSc.Cli -- changes
+
+# Record every object change in the database (needs db_owner, once); --script-only prints the SQL instead
+dotnet run --project src/SqlSc.Cli -- changelog install path/to/working-folder
+dotnet run --project src/SqlSc.Cli -- changelog show path/to/working-folder
 
 # Write changed objects from the database into the folder (deleting files of dropped objects)
 dotnet run --project src/SqlSc.Cli -- export path/to/working-folder Sales.Customer "[Sales].[GetCustomer]"
@@ -70,13 +74,13 @@ dotnet run --project src/SqlSc.Cli -- data unlink path/to/working-folder Sales.C
 
 `export` writes one file per object in Redgate's layout (`Tables\Sales.Customer.sql`, `Stored Procedures\...`) with the
 object's keys, indexes, triggers, permissions and extended properties in the same file, UTF-8 and CRLF line endings.
-Database scoped credentials aren't exported, since their secrets can't be read back. `--mine` uses the default trace.
+Database scoped credentials aren't exported, since their secrets can't be read back. `--mine` uses the change log or the default trace.
 
 `apply` runs DacFx's deployment script for the selected objects in one transaction, and rolls it back on any error. On a
 shared database this changes it for everyone. `--all` never drops objects that are only in the database; name one to drop
 it. Changes that could lose data (dropping a column, or a table with rows) stop the deployment unless you pass
 `--allow-data-loss`. Objects whose last change in the database was made by another login are refused unless you pass
-`--force`; this uses the default trace, so it isn't checked on Azure SQL Database or Hyperscale.
+`--force`; this uses the change log or the default trace, so on Azure SQL Database or Hyperscale it needs the change log.
 
 Static data tables need a primary key; `data link` warns above 10,000 rows. `export`, `commit` and `apply` only include
 their rows with `--data`; without it they handle schema only. `status` compares the rows by primary key
@@ -84,6 +88,14 @@ their rows with `--data`; without it they handle schema only. `status` compares 
 writes one `INSERT` per row, ordered by primary key, with `SET IDENTITY_INSERT` around identity tables. `apply` inserts,
 updates and deletes rows in one transaction, parents before children; `--all` never deletes rows that are only in the
 database, so name the table to delete them.
+
+Changed by (in `status`, `--mine` and `apply`'s check) comes from the default trace on SQL Server and MI. Azure SQL
+Database and Hyperscale have no default trace, and the default trace only keeps recent changes, so `changelog install`
+adds a database DDL trigger `sqlsc_ChangeLog` that records the time, login, host, application and object of every DDL
+statement in `[sqlsc].[ChangeLog]`. When it's installed, sql-sc uses it instead of the default trace. The trigger runs as
+`dbo`, so every login's changes are logged without extra permissions, and it never blocks DDL, even if it fails or the
+table is missing. Index rebuilds and statistics updates aren't logged. `public` can read the table. sql-sc never shows,
+exports or applies the `sqlsc` schema or the trigger. `changelog remove` drops them and what they recorded.
 
 Connection strings are plain `Microsoft.Data.SqlClient` ones, so SQL authentication, Windows authentication
 (`Integrated Security=true`) and Entra ID (`Authentication=Active Directory Default` or `Active Directory Interactive`) all work.

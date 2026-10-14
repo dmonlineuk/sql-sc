@@ -329,7 +329,7 @@ internal sealed class CatalogSnapshot
                 (N'certificates', (SELECT COUNT(*) FROM sys.certificates WHERE name NOT LIKE N'##%')),
                 (N'asymmetric keys', (SELECT COUNT(*) FROM sys.asymmetric_keys WHERE name NOT LIKE N'##%')),
                 (N'symmetric keys', (SELECT COUNT(*) FROM sys.symmetric_keys WHERE name NOT LIKE N'##%')),
-                (N'database DDL triggers', (SELECT COUNT(*) FROM sys.triggers WHERE parent_class = 0 AND is_ms_shipped = 0)),
+                (N'database DDL triggers', (SELECT COUNT(*) FROM sys.triggers WHERE parent_class = 0 AND is_ms_shipped = 0 AND name <> N'sqlsc_ChangeLog')),
                 (N'external file formats', (SELECT COUNT(*) FROM sys.external_file_formats)),
                 (N'rules and bound defaults', (SELECT COUNT(*) FROM sys.objects WHERE type IN ('R', 'D') AND parent_object_id = 0 AND is_ms_shipped = 0)),
                 (N'Service Broker queues', (SELECT COUNT(*) FROM sys.service_queues WHERE is_ms_shipped = 0)),

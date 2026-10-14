@@ -25,7 +25,7 @@ public static class StatusService
     /// <summary>Relationships that point from a parentless child object to the object it belongs to.</summary>
     private static readonly HashSet<string> OwnerRelationships = new(StringComparer.Ordinal) { "Host", "SecuredObject" };
 
-    /// <summary>Types the default trace never reports by their own name.</summary>
+    /// <summary>Types the default trace and the change log never report by their own name.</summary>
     private static readonly HashSet<string> UntracedTypes = new(StringComparer.Ordinal) { "ExtendedProperty", "Permission", "RoleMembership" };
 
     internal const string DatabasePackageName = "database.dacpac";
@@ -135,7 +135,7 @@ public static class StatusService
         timings["compare"] = Lap(stopwatch);
 
         var changeLog = includeChangedBy
-            ? DefaultTraceReader.Read(connectionString)
+            ? ChangeHistory.Read(connectionString)
             : new ChangeLog(false, "Not requested.", []);
         timings["changedBy"] = Lap(stopwatch);
 

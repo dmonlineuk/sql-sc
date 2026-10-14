@@ -1,5 +1,6 @@
 using Microsoft.SqlServer.Dac;
 using Microsoft.SqlServer.Dac.Model;
+using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Modeling;
 
 namespace SqlSc.Core.Comparison;
@@ -35,9 +36,12 @@ public static class DatabaseReferences
         "DefaultConstraint", "DmlTrigger", "ExtendedProcedure", "Queue", "Rule", "Default",
     };
 
-    /// <summary>Objects that live outside the database or are created by SQL Server itself, so never belong in source control.</summary>
+    /// <summary>
+    /// Objects that live outside the database, are created by SQL Server itself or are sql-sc's own change log, so never belong in source control.
+    /// </summary>
     public static bool IsInfrastructure(TSqlObject obj) =>
         ServerScopedTypes.Contains(obj.ObjectType.Name)
+        || ChangeLogTable.Owns(obj)
         || obj.ObjectType.Name is "SqlFile" or "DatabaseOptions" or "MasterKey"
         || (obj.ObjectType.Name == "Route" && obj.Name.Parts is ["AutoCreatedLocal"]);
 

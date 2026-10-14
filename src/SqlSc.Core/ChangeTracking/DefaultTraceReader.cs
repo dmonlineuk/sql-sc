@@ -21,7 +21,8 @@ public sealed record ChangeEvent(
     public string Key => SchemaName is null ? ObjectName : $"{SchemaName}.{ObjectName}";
 }
 
-public sealed record ChangeLog(bool Available, string? UnavailableReason, IReadOnlyList<ChangeEvent> Events)
+/// <param name="Source">Where the events come from: the change log or the default trace.</param>
+public sealed record ChangeLog(bool Available, string? UnavailableReason, IReadOnlyList<ChangeEvent> Events, string? Source = null)
 {
     /// <summary>The most recent event per object, keyed by "schema.name" (or "name" for objects without a schema).</summary>
     public IReadOnlyDictionary<string, ChangeEvent> Latest { get; } = Events
@@ -62,7 +63,7 @@ public static class DefaultTraceReader
                 return new ChangeLog(false, "The default trace is disabled on this server.", []);
             }
 
-            return new ChangeLog(true, null, ReadEvents(connection, RolloverBasePath(currentFile)));
+            return new ChangeLog(true, null, ReadEvents(connection, RolloverBasePath(currentFile)), ChangeHistory.DefaultTraceSource);
         }
         catch (SqlException ex) when (ex.Number == InvalidObjectName)
         {
