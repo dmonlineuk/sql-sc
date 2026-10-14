@@ -93,7 +93,10 @@ public class StaticDataTests
 
         RedgateDatabaseInfo.SetDataFiles(path, ["Sales.Customer_Data.sql", "dbo.Lookup_Data.sql"]);
 
+        var newLine = original.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
         var updated = File.ReadAllText(path);
+        Assert.Equal(updated.ReplaceLineEndings(newLine), updated);
+        updated = updated.ReplaceLineEndings("\n");
         Assert.Equal(["dbo.Lookup_Data.sql", "Sales.Customer_Data.sql"], RedgateDatabaseInfo.Load(path).DataFiles);
         Assert.Contains("<DataFileSet>\n    <Count>2</Count>\n    <DataFile>dbo.Lookup_Data.sql</DataFile>\n    <DataFile>Sales.Customer_Data.sql</DataFile>\n  </DataFileSet>", updated, StringComparison.Ordinal);
         Assert.Equal(Encoding.UTF8.Preamble.ToArray(), File.ReadAllBytes(path)[..3]);

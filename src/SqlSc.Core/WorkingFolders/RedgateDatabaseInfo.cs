@@ -95,7 +95,7 @@ public sealed record RedgateDatabaseInfo(
 
         var declaration = document.Declaration is { } d ? d + newLine : "";
         var trailing = text.EndsWith('\n') ? newLine : "";
-        File.WriteAllText(path, declaration + root.ToString(SaveOptions.DisableFormatting) + trailing, encoding);
+        File.WriteAllText(path, declaration + root.ToString(SaveOptions.DisableFormatting).ReplaceLineEndings(newLine) + trailing, encoding);
     }
 
     internal static string NormalizeSeparators(string relativePath) =>
