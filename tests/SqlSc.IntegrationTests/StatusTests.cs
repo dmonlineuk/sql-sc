@@ -281,11 +281,11 @@ public class StatusTests(SqlServerFixture sql)
 
         var checks = Doctor.Run(sql.ConnectionString(database), WorkingFolder.Open(SqlServerFixture.DemoFolder));
 
-        Assert.Equal(["Working folder", "Connection", "Server", "Permissions", "Default trace", "Latency", "Catalog", "Filter", "Catalog scripting", "Schema extract"], checks.Select(c => c.Name));
+        Assert.Equal(["Working folder", "Connection", "Server", "Permissions", "Default trace", "Change log", "Latency", "Catalog", "Filter", "Catalog scripting", "Schema extract"], checks.Select(c => c.Name));
         Assert.All(checks, c => Assert.True(c.Result == CheckResult.Ok, $"{c.Name}: {c.Result} {c.Detail}"));
         Assert.Contains("SQL (sa)", checks[1].Detail, StringComparison.Ordinal);
         Assert.DoesNotContain(checks, c => c.Detail.Contains("Password", StringComparison.OrdinalIgnoreCase));
-        Assert.StartsWith("No filter: all 5 objects", checks[7].Detail, StringComparison.Ordinal);
+        Assert.StartsWith("No filter: all 5 objects", checks[8].Detail, StringComparison.Ordinal);
         Assert.EndsWith("catalog scripting matches it", checks[^1].Detail, StringComparison.Ordinal);
     }
 

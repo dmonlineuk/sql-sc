@@ -35,7 +35,7 @@ var connectionOption = new Option<string?>("--connection", "-c")
 var modeOption = new Option<DatabaseMode>("--mode") { Description = "shared (one database for the team) or dedicated (your own database).", DefaultValueFactory = _ => DatabaseMode.Shared };
 var removeOption = new Option<bool>("--remove") { Description = "Remove the folder's link." };
 var optionalFolderArgument = new Argument<DirectoryInfo?>("folder") { Description = "Working folder. Defaults to the current folder.", Arity = ArgumentArity.ZeroOrOne };
-var noChangedByOption = new Option<bool>("--no-changed-by") { Description = "Skip reading the default trace." };
+var noChangedByOption = new Option<bool>("--no-changed-by") { Description = "Skip reading who changed each object (the change log or the default trace)." };
 var diffOption = new Option<bool>("--diff") { Description = "For each modified object, show the first line where the database and folder scripts differ, and list the static data rows that differ." };
 var fullExtractOption = new Option<bool>("--full-extract") { Description = "Read the whole database with DacFx instead of scripting only tracked objects from the catalog." };
 
@@ -200,7 +200,7 @@ dataUnlink.SetAction(result =>
 });
 var data = new Command("data", "Choose which tables' rows are kept in the working folder as static data (RedGateDatabaseInfo.xml).") { dataLink, dataUnlink };
 
-var changes = new Command("changes", "List recent object changes recorded in the default trace.")
+var changes = new Command("changes", "List recent object changes recorded in the change log, or else the default trace.")
 {
     connectionOption, jsonOption,
 };
@@ -212,25 +212,75 @@ changes.SetAction(result =>
         return 2;
     }
 
-    var log = DefaultTraceReader.Read(connection);
+    var log = ChangeHistory.Read(connection);
     if (result.GetValue(jsonOption))
     {
         Console.WriteLine(JsonSerializer.Serialize(log, json));
     }
     else if (!log.Available)
     {
-        Console.WriteLine($"Default trace unavailable: {log.UnavailableReason}");
+        Console.WriteLine($"Changes unavailable: {log.UnavailableReason}");
     }
     else
     {
-        foreach (var e in log.Events)
-        {
-            Console.WriteLine(Invariant($"  {e.StartTime:yyyy-MM-dd HH:mm:ss} {e.Kind,-8} {e.Key,-50} {e.LoginName} ({e.HostName}, {e.ApplicationName})"));
-        }
+        Console.WriteLine($"From the {log.Source}:");
+        WriteChangeEvents(log.Events);
     }
 
     return log.Available ? 0 : 1;
 });
+
+var changeLogScriptOnlyOption = new Option<bool>("--script-only") { Description = "Print the SQL and change nothing, e.g. for a db_owner to run." };
+var changeLogInstall = new Command(
+    "install",
+    "Add a DDL trigger and the table [sqlsc].[ChangeLog] to the database, to record who changes which object. Needs db_owner, once. "
+        + "Azure SQL Database has no default trace, so Changed by needs this there.")
+{
+    optionalFolderArgument, connectionOption, changeLogScriptOnlyOption,
+};
+changeLogInstall.SetAction(result => RunChangeLog(result, ChangeLogTable.InstallBatches, ChangeLogTable.Install, "Installed the change log: every object change in this database is now recorded."));
+var changeLogRemove = new Command("remove", "Drop the change log's trigger and table, and everything they recorded.")
+{
+    optionalFolderArgument, connectionOption, changeLogScriptOnlyOption,
+};
+changeLogRemove.SetAction(result => RunChangeLog(result, ChangeLogTable.RemoveBatches, ChangeLogTable.Remove, "Removed the change log."));
+var topOption = new Option<int>("--top") { Description = "How many of the latest changes to list.", DefaultValueFactory = _ => 20 };
+var changeLogShow = new Command("show", "Show whether the change log is installed, and its latest changes.")
+{
+    optionalFolderArgument, connectionOption, topOption, jsonOption,
+};
+changeLogShow.SetAction(result =>
+{
+    var connection = ResolveConnection(result.GetValue(connectionOption), result.GetValue(optionalFolderArgument)?.FullName ?? Environment.CurrentDirectory);
+    if (connection is null)
+    {
+        return 2;
+    }
+
+    var state = ChangeLogTable.QueryState(connection);
+    var latest = (state.TableExists ? ChangeLogTable.Read(connection)?.Events ?? [] : [])
+        .TakeLast(Math.Max(0, result.GetValue(topOption)))
+        .ToList();
+    if (result.GetValue(jsonOption))
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new { state.Installed, state.TableExists, state.TriggerExists, state.TriggerEnabled, state.Events, state.Oldest, state.Newest, Latest = latest }, json));
+        return state.Installed ? 0 : 1;
+    }
+
+    Console.WriteLine(state switch
+    {
+        { Absent: true } => "The change log isn't installed. Run `sql-sc changelog install` (needs db_owner).",
+        { Installed: false } => "The change log is only partly installed, so changes aren't recorded. Run `sql-sc changelog install` again.",
+        { Events: 0 } => "The change log is installed. No changes recorded yet.",
+        _ => Invariant($"The change log is installed: {state.Events} changes since {state.Oldest:yyyy-MM-dd HH:mm}."),
+    });
+    WriteChangeEvents(latest);
+    return state.Installed ? 0 : 1;
+});
+var changeLog = new Command("changelog", "Record who changes which object with a DDL trigger in the database, for Changed by where the default trace can't (Azure SQL Database).")
+{
+    changeLogInstall, changeLogRemove, changeLogShow,
+};
 
 var link = new Command("link", "Link a working folder to a database for the current user. Without --connection, shows the current link.")
 {
@@ -325,7 +375,7 @@ doctor.SetAction(result =>
 
 var objectsArgument = new Argument<string[]>("objects") { Description = "Objects to export, e.g. Sales.Customer or [Sales].[Customer].", Arity = ArgumentArity.ZeroOrMore };
 var allOption = new Option<bool>("--all") { Description = "Every object that differs between the database and the folder." };
-var mineOption = new Option<bool>("--mine") { Description = "Objects whose last change in the database was made by your login (needs the default trace)." };
+var mineOption = new Option<bool>("--mine") { Description = "Objects whose last change in the database was made by your login (needs the change log or the default trace)." };
 var messageOption = new Option<string>("--message", "-m") { Description = "Commit message.", Required = true };
 var dataOption = new Option<bool>("--data") { Description = "Include the rows of selected static data tables (see `data link`). Without it only schema is included." };
 var dryRunOption = new Option<bool>("--dry-run") { Description = "Show the diff of each file export would write or delete, without changing anything." };
@@ -386,7 +436,7 @@ var applyObjectsArgument = new Argument<string[]>("objects") { Description = "Ob
 var applyAllOption = new Option<bool>("--all") { Description = "Every object that differs, except objects only in the database, which are dropped only when named." };
 var scriptOnlyOption = new Option<bool>("--script-only") { Description = "Print the deployment script and change nothing." };
 var allowDataLossOption = new Option<bool>("--allow-data-loss") { Description = "Allow changes that could lose data, such as dropping a column, or a table that has rows." };
-var forceOption = new Option<bool>("--force") { Description = "Apply objects even if another login made their last change in the database (needs the default trace)." };
+var forceOption = new Option<bool>("--force") { Description = "Apply objects even if another login made their last change in the database (needs the change log or the default trace)." };
 var apply = new Command("apply", "Deploy the working folder's version of objects to the database (Get latest). In shared mode this changes the database for everyone.")
 {
     folderArgument, applyObjectsArgument, applyAllOption, dataOption, scriptOnlyOption, allowDataLossOption, forceOption, connectionOption, fullExtractOption, jsonOption,
@@ -429,7 +479,7 @@ apply.SetAction(result =>
     return applied.Problems.Count > 0 ? 1 : 0;
 });
 
-var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, link, data, doctor, export, commit, apply };
+var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, changeLog, link, data, doctor, export, commit, apply };
 try
 {
     return root.Parse(args).Invoke(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
@@ -551,6 +601,33 @@ static void WriteApply(ApplyResult applied, bool scriptOnly)
     else if (applied.Objects.Count > 0 || applied.Data.Count > 0)
     {
         Console.WriteLine("Nothing was applied.");
+    }
+}
+
+int RunChangeLog(ParseResult result, IReadOnlyList<string> batches, Action<string> run, string done)
+{
+    if (result.GetValue(changeLogScriptOnlyOption))
+    {
+        Console.Write(ChangeLogTable.Script(batches));
+        return 0;
+    }
+
+    var connection = ResolveConnection(result.GetValue(connectionOption), result.GetValue(optionalFolderArgument)?.FullName ?? Environment.CurrentDirectory);
+    if (connection is null)
+    {
+        return 2;
+    }
+
+    run(connection);
+    Console.WriteLine(done);
+    return 0;
+}
+
+static void WriteChangeEvents(IEnumerable<ChangeEvent> events)
+{
+    foreach (var e in events)
+    {
+        Console.WriteLine(Invariant($"  {e.StartTime:yyyy-MM-dd HH:mm:ss} {e.Kind,-8} {e.Key,-50} {e.LoginName} ({e.HostName}, {e.ApplicationName})"));
     }
 }
 

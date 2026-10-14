@@ -59,6 +59,7 @@ public static partial class Doctor
         checks.Add(Check("Server", () => CheckServer(connectionString)));
         checks.Add(Check("Permissions", () => CheckPermissions(connectionString)));
         checks.Add(Check("Default trace", () => CheckDefaultTrace(connectionString)));
+        checks.Add(Check("Change log", () => CheckChangeLog(connectionString)));
         checks.Add(Check("Latency", () => CheckLatency(connectionString)));
         CatalogSummary? catalog = null;
         checks.Add(Check("Catalog", () =>
@@ -146,7 +147,7 @@ public static partial class Doctor
         var detail = Invariant($"{info.ProductVersion} {edition} (engine edition {info.EngineEdition}), platform {info.Platform}");
         return info.EngineEdition switch
         {
-            5 => (CheckResult.Warning, detail + "; Azure SQL Database has no default trace, so Changed by is unavailable"),
+            5 => (CheckResult.Ok, detail + "; Azure SQL Database has no default trace, so Changed by needs the change log"),
             8 => (CheckResult.Ok, detail),
             _ when info.MajorVersion < 13 => (CheckResult.Warning, detail + "; SQL Server 2016 or later is recommended"),
             _ => (CheckResult.Ok, detail),
@@ -173,7 +174,7 @@ public static partial class Doctor
 
         return alterTrace == true || viewServerState == true
             ? (CheckResult.Ok, detail)
-            : (CheckResult.Warning, detail + "; Changed by needs ALTER TRACE");
+            : (CheckResult.Warning, detail + "; Changed by needs ALTER TRACE, or the change log");
     }
 
     private static (CheckResult, string) CheckDefaultTrace(string connectionString)
@@ -201,6 +202,28 @@ public static partial class Doctor
 
         var oldest = log.Events.Min(e => e.StartTime);
         return (CheckResult.Ok, Invariant($"Readable; {log.Events.Count} object changes for this database since {oldest:yyyy-MM-dd HH:mm}"));
+    }
+
+    private static (CheckResult, string) CheckChangeLog(string connectionString)
+    {
+        const string Install = "run `sql-sc changelog install` (needs db_owner)";
+        var state = ChangeLogTable.QueryState(connectionString);
+        if (state.Absent)
+        {
+            return ServerInfo.Query(connectionString).EngineEdition == 5
+                ? (CheckResult.Warning, $"Not installed, so Changed by is unavailable; {Install}")
+                : (CheckResult.Ok, $"Not installed; Changed by uses the default trace, which only keeps recent changes. To keep them all, {Install}");
+        }
+
+        if (!state.Installed)
+        {
+            var missing = !state.TableExists ? "the table is missing" : !state.TriggerExists ? "the trigger is missing" : "the trigger is disabled";
+            return (CheckResult.Warning, $"Partly installed: {missing}, so changes aren't recorded; {Install} again");
+        }
+
+        return state.Events == 0
+            ? (CheckResult.Ok, "Installed; no changes recorded yet")
+            : (CheckResult.Ok, Invariant($"Installed; {state.Events} changes recorded since {state.Oldest:yyyy-MM-dd HH:mm}, the latest at {state.Newest:yyyy-MM-dd HH:mm}"));
     }
 
     private static (CheckResult, string) CheckLatency(string connectionString)
