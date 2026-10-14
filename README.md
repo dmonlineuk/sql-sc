@@ -61,6 +61,11 @@ dotnet run --project src/SqlSc.Cli -- commit path/to/working-folder -m "My chang
 # Get latest: deploy the folder's version of objects to the database. --script-only prints the script and changes nothing
 dotnet run --project src/SqlSc.Cli -- apply path/to/working-folder --all --script-only
 dotnet run --project src/SqlSc.Cli -- apply path/to/working-folder Sales.Customer "[Sales].[GetCustomer]"
+
+# Static data: track a table's rows in Data\Sales.Customer_Data.sql (listed in RedGateDatabaseInfo.xml), then export them
+dotnet run --project src/SqlSc.Cli -- data link path/to/working-folder Sales.Customer
+dotnet run --project src/SqlSc.Cli -- export path/to/working-folder Sales.Customer --data
+dotnet run --project src/SqlSc.Cli -- data unlink path/to/working-folder Sales.Customer
 ```
 
 `export` writes one file per object in Redgate's layout (`Tables\Sales.Customer.sql`, `Stored Procedures\...`) with the
@@ -72,6 +77,13 @@ shared database this changes it for everyone. `--all` never drops objects that a
 it. Changes that could lose data (dropping a column, or a table with rows) stop the deployment unless you pass
 `--allow-data-loss`. Objects whose last change in the database was made by another login are refused unless you pass
 `--force`; this uses the default trace, so it isn't checked on Azure SQL Database or Hyperscale.
+
+Static data tables need a primary key; `data link` warns above 10,000 rows. `export`, `commit` and `apply` only include
+their rows with `--data`; without it they handle schema only. `status` compares the rows by primary key
+(`--diff` lists them) by loading the folder's script into a temporary table, so only `#` tables are written. `export`
+writes one `INSERT` per row, ordered by primary key, with `SET IDENTITY_INSERT` around identity tables. `apply` inserts,
+updates and deletes rows in one transaction, parents before children; `--all` never deletes rows that are only in the
+database, so name the table to delete them.
 
 Connection strings are plain `Microsoft.Data.SqlClient` ones, so SQL authentication, Windows authentication
 (`Integrated Security=true`) and Entra ID (`Authentication=Active Directory Default` or `Active Directory Interactive`) all work.
@@ -109,7 +121,7 @@ An optional `sql-sc.json` in the working folder holds settings shared by the tea
 
 | Path | |
 |---|---|
-| `src/SqlSc.Core` | Working folder reader, settings and links, filters, DacFx model loading, comparison, default trace reader, doctor, export, commit and apply |
+| `src/SqlSc.Core` | Working folder reader, settings and links, filters, DacFx model loading, comparison, default trace reader, doctor, export, commit, apply and static data |
 | `src/SqlSc.Cli` | `sql-sc` command-line tool |
 | `tests/SqlSc.Core.Tests` | Unit tests |
 | `tests/SqlSc.IntegrationTests` | Tests against SQL Server 2022 in Docker |

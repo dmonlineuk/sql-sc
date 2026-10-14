@@ -2,12 +2,14 @@ using System.Text;
 using Microsoft.Data.SqlClient;
 using SqlSc.Core.Comparison;
 using SqlSc.Core.Scripting;
+using SqlSc.Core.StaticData;
 using SqlSc.Core.WorkingFolders;
 
 namespace SqlSc.Core.Export;
 
 /// <summary>Which changed objects to export: those named, every changed object, or those last changed by the current login.</summary>
-public sealed record ExportSelection(IReadOnlyList<string> Names, bool All = false, bool Mine = false);
+/// <param name="Data">Include the rows of selected static data tables; without it only their schema is selected.</param>
+public sealed record ExportSelection(IReadOnlyList<string> Names, bool All = false, bool Mine = false, bool Data = false);
 
 public enum FileAction
 {
@@ -25,6 +27,7 @@ public sealed record ExportedFile(string Path, FileAction Action, IReadOnlyList<
 public sealed record ExportResult(
     StatusReport Status,
     IReadOnlyList<ObjectChange> Selected,
+    IReadOnlyList<DataChange> SelectedData,
     IReadOnlyList<ExportedFile> Files,
     IReadOnlyList<string> Problems);
 
@@ -47,6 +50,7 @@ public static class ExportService
         var report = session.Report;
         var problems = new List<string>();
         var selected = Select(report, selection, connectionString, problems);
+        var selectedData = SelectData(report, selection, problems);
 
         var database = ObjectFiles.Group(session.Database.Model);
         var folderOwners = ObjectFiles.Group(session.Folder.Model, DatabaseReferences.IsBorrowed);
@@ -122,16 +126,30 @@ public static class ExportService
                 continue;
             }
 
-            var fullPath = Path.Combine(folder.RootPath, path);
-            var objects = keys.Select(k => k.Name).ToList();
-            var existing = File.Exists(fullPath) ? File.ReadAllText(fullPath) : null;
-            var text = statements.Count == 0 ? null : ScriptFileWriter.Write(statements);
-            var action = existing == text ? FileAction.Unchanged : text is null ? FileAction.Deleted : FileAction.Written;
-            var label = path.Replace('\\', '/');
-            var diff = dryRun && action != FileAction.Unchanged
-                ? UnifiedDiff.Create(existing, text, existing is null ? UnifiedDiff.NoFile : "a/" + label, text is null ? UnifiedDiff.NoFile : "b/" + label)
-                : null;
-            planned.Add((new ExportedFile(path, action, objects, diff), text));
+            planned.Add(Plan(folder, path, statements.Count == 0 ? null : ScriptFileWriter.Write(statements), [.. keys.Select(k => k.Name)], dryRun));
+        }
+
+        if (selectedData.Count > 0)
+        {
+            var tracked = StaticDataService.Tracked(folder);
+            using var connection = new SqlConnection(connectionString);
+            connection.Open();
+            foreach (var change in selectedData)
+            {
+                var table = tracked.First(t => string.Equals(t.File, change.File, StringComparison.OrdinalIgnoreCase));
+                string text;
+                try
+                {
+                    text = StaticDataService.Script(connection, folder, table);
+                }
+                catch (InvalidDataException ex)
+                {
+                    problems.Add(ex.Message);
+                    continue;
+                }
+
+                planned.Add(Plan(folder, table.File, text, [change.Table], dryRun));
+            }
         }
 
         if (!dryRun && (problems.Count == 0 || writeIfProblems))
@@ -152,7 +170,40 @@ public static class ExportService
             }
         }
 
-        return new ExportResult(report, selected, planned.Select(p => p.File).ToList(), problems);
+        return new ExportResult(report, selected, selectedData, planned.Select(p => p.File).ToList(), problems);
+    }
+
+    /// <summary>
+    /// The static data tables to export or apply: those named, or every table whose rows differ for <see cref="ExportSelection.All"/>.
+    /// <c>--mine</c> picks none, as nothing records who changed rows. Tables that couldn't be compared are problems.
+    /// </summary>
+    internal static List<DataChange> SelectData(StatusReport report, ExportSelection selection, List<string> problems)
+    {
+        if (!selection.Data)
+        {
+            return [];
+        }
+
+        var candidates = selection.All
+            ? report.Data.Where(d => d.HasChanges || d.Problem is not null).ToList()
+            : selection.Names.Select(FormatName)
+                .SelectMany(name => report.Data.Where(d => string.Equals(d.Table, name, StringComparison.OrdinalIgnoreCase)))
+                .Distinct()
+                .ToList();
+        problems.AddRange(candidates.Select(d => d.Problem).OfType<string>());
+        return candidates.Where(d => d.Problem is null).ToList();
+    }
+
+    private static (ExportedFile File, string? Text) Plan(WorkingFolder folder, string path, string? text, IReadOnlyList<string> objects, bool dryRun)
+    {
+        var fullPath = Path.Combine(folder.RootPath, path);
+        var existing = File.Exists(fullPath) ? File.ReadAllText(fullPath) : null;
+        var action = existing == text ? FileAction.Unchanged : text is null ? FileAction.Deleted : FileAction.Written;
+        var label = path.Replace('\\', '/');
+        var diff = dryRun && action != FileAction.Unchanged
+            ? UnifiedDiff.Create(existing, text, existing is null ? UnifiedDiff.NoFile : "a/" + label, text is null ? UnifiedDiff.NoFile : "b/" + label)
+            : null;
+        return (new ExportedFile(path, action, objects, diff), text);
     }
 
     internal static List<ObjectChange> Select(StatusReport report, ExportSelection selection, string connectionString, List<string> problems)
@@ -167,9 +218,14 @@ public static class ExportService
         {
             var formatted = FormatName(name);
             var matches = report.Changes.Where(c => string.Equals(c.Name, formatted, StringComparison.OrdinalIgnoreCase)).ToList();
-            if (matches.Count == 0)
+            var dataDiffers = report.Data.Any(d => string.Equals(d.Table, formatted, StringComparison.OrdinalIgnoreCase) && (d.HasChanges || d.Problem is not null));
+            if (matches.Count == 0 && !dataDiffers)
             {
                 problems.Add($"{name}: no differences between the database and the folder.");
+            }
+            else if (matches.Count == 0 && !selection.Data)
+            {
+                problems.Add($"{name}: only its static data differs; pass --data to include it.");
             }
 
             selected.AddRange(matches);
@@ -190,7 +246,11 @@ public static class ExportService
     }
 
     /// <summary>An object name as status reports it: <c>Sales.Customer</c> or <c>[Sales].[Customer]</c> becomes <c>[Sales].[Customer]</c>.</summary>
-    public static string FormatName(string name)
+    public static string FormatName(string name) =>
+        NameParts(name) is { } parts ? string.Join('.', parts.Select(p => $"[{p}]")) : name;
+
+    /// <summary>The parts of a dotted name, with brackets or quotes removed, or null if it isn't a valid name.</summary>
+    internal static IReadOnlyList<string>? NameParts(string name)
     {
         var parts = new List<string>();
         var part = new StringBuilder();
@@ -230,7 +290,7 @@ public static class ExportService
         }
 
         parts.Add(part.ToString().Trim());
-        return closing is not null || parts.Any(p => p.Length == 0) ? name : string.Join('.', parts.Select(p => $"[{p}]"));
+        return closing is not null || parts.Any(p => p.Length == 0) ? null : parts;
     }
 
     internal static string CurrentLogin(string connectionString)

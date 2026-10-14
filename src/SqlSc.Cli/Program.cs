@@ -10,6 +10,7 @@ using SqlSc.Core.Diagnostics;
 using SqlSc.Core.Export;
 using SqlSc.Core.Modeling;
 using SqlSc.Core.Settings;
+using SqlSc.Core.StaticData;
 using SqlSc.Core.WorkingFolders;
 
 var json = new JsonSerializerOptions
@@ -34,7 +35,7 @@ var modeOption = new Option<DatabaseMode>("--mode") { Description = "shared (one
 var removeOption = new Option<bool>("--remove") { Description = "Remove the folder's link." };
 var optionalFolderArgument = new Argument<DirectoryInfo?>("folder") { Description = "Working folder. Defaults to the current folder.", Arity = ArgumentArity.ZeroOrOne };
 var noChangedByOption = new Option<bool>("--no-changed-by") { Description = "Skip reading the default trace." };
-var diffOption = new Option<bool>("--diff") { Description = "For each modified object, show the first line where the database and folder scripts differ." };
+var diffOption = new Option<bool>("--diff") { Description = "For each modified object, show the first line where the database and folder scripts differ, and list the static data rows that differ." };
 var fullExtractOption = new Option<bool>("--full-extract") { Description = "Read the whole database with DacFx instead of scripting only tracked objects from the catalog." };
 
 var load = new Command("load", "Load a working folder into a schema model and report any problems.")
@@ -100,7 +101,8 @@ status.SetAction(result =>
         Console.WriteLine($"Changed by: unknown ({report.ChangeLog.UnavailableReason})");
     }
 
-    if (report.Changes.Count == 0)
+    var dataChanges = report.Data.Where(d => d.HasChanges || d.Problem is not null).ToList();
+    if (report.Changes.Count == 0 && dataChanges.Count == 0)
     {
         Console.WriteLine("No differences.");
     }
@@ -124,9 +126,78 @@ status.SetAction(result =>
         }
     }
 
+    const int MaxRowsShown = 20;
+    if (dataChanges.Count > 0)
+    {
+        Console.WriteLine("Static data:");
+    }
+
+    foreach (var data in dataChanges)
+    {
+        if (data.Problem is not null)
+        {
+            Console.WriteLine($"  Problem   {data.Table,-50} {data.Problem}");
+            continue;
+        }
+
+        Console.WriteLine(Invariant($"  {"Modified",-9} {"Data",-24} {data.Table,-50} {data.New} new, {data.Modified} modified, {data.Deleted} deleted row(s)"));
+        if (!result.GetValue(diffOption))
+        {
+            continue;
+        }
+
+        foreach (var group in data.Rows.GroupBy(r => r.Status))
+        {
+            foreach (var row in group.Take(MaxRowsShown))
+            {
+                var columns = row.Columns.Count > 0 ? $"  ({string.Join(", ", row.Columns)})" : "";
+                Console.WriteLine($"      {row.Status,-9} {row.Key}{columns}");
+            }
+
+            var total = group.Key switch { ObjectStatus.New => data.New, ObjectStatus.Modified => data.Modified, _ => data.Deleted };
+            if (total > MaxRowsShown)
+            {
+                Console.WriteLine(Invariant($"      ... and {total - MaxRowsShown} more {group.Key.ToString().ToLowerInvariant()} row(s)"));
+            }
+        }
+    }
+
     Console.WriteLine(string.Join(", ", report.Timings.Select(t => Invariant($"{t.Key} {t.Value.TotalSeconds:0.00}s"))));
     return 0;
 });
+
+var tablesArgument = new Argument<string[]>("tables") { Description = "Tables, e.g. Sales.Customer or [Sales].[Customer].", Arity = ArgumentArity.OneOrMore };
+var dataLink = new Command("link", "Track the rows of tables as static data. Each needs a primary key. Export the tables afterwards to write their data scripts.")
+{
+    folderArgument, tablesArgument, connectionOption,
+};
+dataLink.SetAction(result =>
+{
+    if (Connect(result) is not var (folder, connection))
+    {
+        return 2;
+    }
+
+    var linked = StaticDataService.Link(folder, connection, result.GetValue(tablesArgument) ?? []);
+    WriteDataLink(linked, "Linked");
+    if (linked.Tables.Count > 0)
+    {
+        Console.WriteLine($"Run `sql-sc export <folder> {string.Join(' ', linked.Tables.Select(t => $"{t.Schema}.{t.Name}"))} --data` to write their data.");
+    }
+
+    return linked.Problems.Count > 0 ? 1 : 0;
+});
+var dataUnlink = new Command("unlink", "Stop tracking the rows of tables, and delete their data scripts.")
+{
+    folderArgument, tablesArgument,
+};
+dataUnlink.SetAction(result =>
+{
+    var unlinked = StaticDataService.Unlink(WorkingFolder.Open(result.GetRequiredValue(folderArgument).FullName), result.GetValue(tablesArgument) ?? []);
+    WriteDataLink(unlinked, "Unlinked");
+    return unlinked.Problems.Count > 0 ? 1 : 0;
+});
+var data = new Command("data", "Choose which tables' rows are kept in the working folder as static data (RedGateDatabaseInfo.xml).") { dataLink, dataUnlink };
 
 var changes = new Command("changes", "List recent object changes recorded in the default trace.")
 {
@@ -255,11 +326,12 @@ var objectsArgument = new Argument<string[]>("objects") { Description = "Objects
 var allOption = new Option<bool>("--all") { Description = "Every object that differs between the database and the folder." };
 var mineOption = new Option<bool>("--mine") { Description = "Objects whose last change in the database was made by your login (needs the default trace)." };
 var messageOption = new Option<string>("--message", "-m") { Description = "Commit message.", Required = true };
+var dataOption = new Option<bool>("--data") { Description = "Include the rows of selected static data tables (see `data link`). Without it only schema is included." };
 var dryRunOption = new Option<bool>("--dry-run") { Description = "Show the diff of each file export would write or delete, without changing anything." };
 
 var export = new Command("export", "Write objects from the database into the working folder. Files of objects dropped from the database are deleted.")
 {
-    folderArgument, objectsArgument, allOption, mineOption, dryRunOption, connectionOption, fullExtractOption, jsonOption,
+    folderArgument, objectsArgument, allOption, mineOption, dataOption, dryRunOption, connectionOption, fullExtractOption, jsonOption,
 };
 export.SetAction(result =>
 {
@@ -284,7 +356,7 @@ export.SetAction(result =>
 
 var commit = new Command("commit", "Export objects, then git commit exactly their files. Nothing else that is staged or changed is committed.")
 {
-    folderArgument, objectsArgument, messageOption, allOption, mineOption, connectionOption, fullExtractOption, jsonOption,
+    folderArgument, objectsArgument, messageOption, allOption, mineOption, dataOption, connectionOption, fullExtractOption, jsonOption,
 };
 commit.SetAction(result =>
 {
@@ -316,7 +388,7 @@ var allowDataLossOption = new Option<bool>("--allow-data-loss") { Description = 
 var forceOption = new Option<bool>("--force") { Description = "Apply objects even if another login made their last change in the database (needs the default trace)." };
 var apply = new Command("apply", "Deploy the working folder's version of objects to the database (Get latest). In shared mode this changes the database for everyone.")
 {
-    folderArgument, applyObjectsArgument, applyAllOption, scriptOnlyOption, allowDataLossOption, forceOption, connectionOption, fullExtractOption, jsonOption,
+    folderArgument, applyObjectsArgument, applyAllOption, dataOption, scriptOnlyOption, allowDataLossOption, forceOption, connectionOption, fullExtractOption, jsonOption,
 };
 apply.SetAction(result =>
 {
@@ -339,13 +411,14 @@ apply.SetAction(result =>
         connection,
         names,
         all,
+        result.GetValue(dataOption),
         scriptOnly,
         result.GetValue(allowDataLossOption),
         result.GetValue(forceOption),
         result.GetValue(fullExtractOption));
     if (result.GetValue(jsonOption))
     {
-        Console.WriteLine(JsonSerializer.Serialize(new { applied.Objects, applied.Applied, applied.Problems, applied.Messages, applied.Script }, json));
+        Console.WriteLine(JsonSerializer.Serialize(new { applied.Objects, applied.Data, applied.Applied, applied.Problems, applied.Messages, applied.Script, applied.DataScript }, json));
     }
     else
     {
@@ -355,7 +428,7 @@ apply.SetAction(result =>
     return applied.Problems.Count > 0 ? 1 : 0;
 });
 
-var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, link, doctor, export, commit, apply };
+var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, link, data, doctor, export, commit, apply };
 try
 {
     return root.Parse(args).Invoke(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
@@ -383,7 +456,7 @@ ExportSelection? Selection(ParseResult result)
         return null;
     }
 
-    return new ExportSelection(names, all, mine);
+    return new ExportSelection(names, all, mine, result.GetValue(dataOption));
 }
 
 (WorkingFolder Folder, string Connection)? Connect(ParseResult result)
@@ -394,7 +467,7 @@ ExportSelection? Selection(ParseResult result)
 
 static void WriteExport(ExportResult exported, bool dryRun = false)
 {
-    if (exported.Selected.Count == 0 && exported.Problems.Count == 0)
+    if (exported.Selected.Count == 0 && exported.SelectedData.Count == 0 && exported.Problems.Count == 0)
     {
         Console.WriteLine("No differences.");
     }
@@ -431,7 +504,7 @@ static void WriteExport(ExportResult exported, bool dryRun = false)
 static void WriteApply(ApplyResult applied, bool scriptOnly)
 {
     Console.WriteLine($"{applied.Status.Server}/{applied.Status.Database}");
-    if (applied.Objects.Count == 0 && applied.Problems.Count == 0)
+    if (applied.Objects.Count == 0 && applied.Data.Count == 0 && applied.Problems.Count == 0)
     {
         Console.WriteLine("No differences.");
     }
@@ -442,15 +515,24 @@ static void WriteApply(ApplyResult applied, bool scriptOnly)
         Console.WriteLine($"  {obj.Action,-7} {obj.ObjectType,-24} {obj.Name}{who}");
     }
 
+    foreach (var data in applied.Data)
+    {
+        Console.WriteLine(Invariant($"  {"Data",-7} {"Table",-24} {data.Table}  {data.Inserted} inserted, {data.Updated} updated, {data.Deleted} deleted row(s)"));
+    }
+
     foreach (var problem in applied.Problems)
     {
         Console.WriteLine($"  Problem: {problem}");
     }
 
-    if (scriptOnly && applied.Script is not null)
+    if (scriptOnly && (applied.Script ?? applied.DataScript) is not null)
     {
-        Console.WriteLine();
-        Console.WriteLine(applied.Script.TrimEnd());
+        foreach (var script in new[] { applied.Script, applied.DataScript }.OfType<string>())
+        {
+            Console.WriteLine();
+            Console.WriteLine(script.TrimEnd());
+        }
+
         Console.WriteLine();
         Console.WriteLine("Script only: the database wasn't changed.");
         return;
@@ -463,11 +545,29 @@ static void WriteApply(ApplyResult applied, bool scriptOnly)
 
     if (applied.Applied)
     {
-        Console.WriteLine(Invariant($"Applied {applied.Objects.Count} object(s)."));
+        Console.WriteLine(Invariant($"Applied {applied.Objects.Count} object(s) and the static data of {applied.Data.Count} table(s)."));
     }
-    else if (applied.Objects.Count > 0)
+    else if (applied.Objects.Count > 0 || applied.Data.Count > 0)
     {
         Console.WriteLine("Nothing was applied.");
+    }
+}
+
+static void WriteDataLink(DataLinkResult result, string verb)
+{
+    foreach (var table in result.Tables)
+    {
+        Console.WriteLine($"  {verb} {table.Quoted} ({table.File})");
+    }
+
+    foreach (var message in result.Messages)
+    {
+        Console.WriteLine($"  {message}");
+    }
+
+    foreach (var problem in result.Problems)
+    {
+        Console.WriteLine($"  Problem: {problem}");
     }
 }
 

@@ -36,6 +36,24 @@ public sealed record ObjectChange(
     IReadOnlyList<ChildChange> Children,
     string? Difference = null);
 
+/// <summary>
+/// A row of a static data table that differs, by its primary key. <see cref="ObjectStatus.New"/> rows are only in the database and
+/// <see cref="ObjectStatus.Deleted"/> rows only in the folder. <see cref="Columns"/> are the columns that differ in a modified row.
+/// </summary>
+public sealed record RowChange(ObjectStatus Status, string Key, IReadOnlyList<string> Columns);
+
+/// <summary>
+/// How a table tracked for static data differs between the database and its data script (<see cref="File"/>, relative to the
+/// working folder). <see cref="Rows"/> lists at most <see cref="MaxRows"/> rows of each status; the counts are exact.
+/// <see cref="Problem"/> says why the table couldn't be compared.
+/// </summary>
+public sealed record DataChange(string Table, string File, int New, int Modified, int Deleted, IReadOnlyList<RowChange> Rows, string? Problem = null)
+{
+    public const int MaxRows = 1000;
+
+    public bool HasChanges => New + Modified + Deleted > 0;
+}
+
 public sealed record StatusReport(
     string Server,
     string Database,
@@ -46,4 +64,5 @@ public sealed record StatusReport(
     IReadOnlyList<ObjectChange> Changes,
     ChangeLog ChangeLog,
     IReadOnlyDictionary<string, TimeSpan> Timings,
-    DatabaseModelInfo DatabaseModel);
+    DatabaseModelInfo DatabaseModel,
+    IReadOnlyList<DataChange> Data);
