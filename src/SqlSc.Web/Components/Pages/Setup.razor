@@ -1,0 +1,225 @@
+@page "/"
+@inject UiState State
+
+<PageTitle>sql-sc - Setup</PageTitle>
+
+<section class="card">
+    <h2>Working folder</h2>
+    <label for="folder">Folder (the Redgate-style scripts folder in your git repository)</label>
+    <input id="folder" type="text" @bind="folderInput" placeholder="C:\src\MyDatabase" />
+    <div class="row">
+        <button id="open-folder" @onclick="OpenFolder">Open</button>
+        @if (folderError is not null)
+        {
+            <span class="error">@folderError</span>
+        }
+    </div>
+    @if (links.Count > 0)
+    {
+        <label>Linked folders</label>
+        <table class="grid">
+            <thead><tr><th>Folder</th><th>Database</th><th>Mode</th><th>Authentication</th></tr></thead>
+            <tbody>
+                @foreach (var link in links)
+                {
+                    <tr class="@(IsCurrent(link) ? "selected" : null)" @onclick="() => Select(link.Folder)">
+                        <td>@link.Folder</td>
+                        <td>@ConnectionStrings.Describe(link.Connection)</td>
+                        <td>@link.Mode</td>
+                        <td>@ConnectionStrings.DescribeAuthentication(link.Connection)</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    }
+</section>
+
+@if (State.Folder is not null)
+{
+    <section class="card">
+        <h2>Database for @State.Folder</h2>
+        <label for="connection">Connection string</label>
+        <input id="connection" type="text" @bind="connection" @bind:after="ConnectionEdited"
+               placeholder="Server=myserver;Database=MyDb;Authentication=Active Directory Interactive;Encrypt=True" />
+        <span class="muted">A password in the connection string is never saved.</span>
+        @if (NeedsPassword)
+        {
+            <label for="password">Password for the SQL login (kept in memory until sql-sc ui exits)</label>
+            <input id="password" type="password" @bind="password" autocomplete="off" />
+        }
+        <label for="mode">Mode</label>
+        <select id="mode" @bind="mode">
+            <option value="@DatabaseMode.Shared">Shared - everyone develops on this database</option>
+            <option value="@DatabaseMode.Dedicated">Dedicated - this is my own database</option>
+        </select>
+        <div class="row">
+            <button id="test-connection" @onclick="TestConnection" disabled="@(busy || string.IsNullOrWhiteSpace(connection))">Test connection</button>
+            <button id="save-link" class="primary" @onclick="SaveLink" disabled="@(busy || string.IsNullOrWhiteSpace(connection))">Save link</button>
+            @if (State.CurrentLink is not null)
+            {
+                <button id="remove-link" @onclick="RemoveLink" disabled="@busy">Remove link</button>
+            }
+            @if (busy)
+            {
+                <span class="muted">Connecting...</span>
+            }
+        </div>
+        @if (message is not null)
+        {
+            <p class="@(failed ? "error" : "ok")">@message</p>
+        }
+    </section>
+}
+
+@code {
+    private List<Link> links = [];
+    private string? folderInput;
+    private string? folderError;
+    private string? connection;
+    private string? password;
+    private DatabaseMode mode = DatabaseMode.Shared;
+    private bool busy;
+    private string? message;
+    private bool failed;
+
+    private bool NeedsPassword => !string.IsNullOrWhiteSpace(connection) && IsValid(connection) && ConnectionStrings.NeedsPassword(connection);
+
+    protected override void OnInitialized()
+    {
+        links = [.. State.Links.All()];
+        folderInput = State.Folder;
+        LoadLink();
+    }
+
+    private void OpenFolder() => Select(folderInput);
+
+    private void Select(string? path)
+    {
+        folderError = null;
+        message = null;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            folderError = "Enter a folder.";
+            return;
+        }
+
+        try
+        {
+            var full = Path.GetFullPath(path.Trim());
+            WorkingFolder.Open(full);
+            State.Folder = full;
+            folderInput = full;
+            LoadLink();
+            State.NotifyChanged();
+        }
+        catch (Exception e) when (e is IOException or ArgumentException or InvalidDataException or UnauthorizedAccessException or NotSupportedException)
+        {
+            folderError = e.Message;
+        }
+    }
+
+    private void LoadLink()
+    {
+        var link = State.CurrentLink;
+        connection = link?.Connection;
+        mode = link?.Mode ?? DatabaseMode.Shared;
+        password = null;
+    }
+
+    private bool IsCurrent(Link link) => State.CurrentLink is { } current && current.Folder == link.Folder;
+
+    private void ConnectionEdited() => message = null;
+
+    private string? Effective()
+    {
+        if (string.IsNullOrWhiteSpace(connection) || !IsValid(connection))
+        {
+            Fail("That isn't a valid connection string.");
+            return null;
+        }
+
+        return ConnectionStrings.WithPassword(connection, password ?? Environment.GetEnvironmentVariable(ConnectionStrings.PasswordVariable));
+    }
+
+    private async Task TestConnection()
+    {
+        if (Effective() is not { } effective)
+        {
+            return;
+        }
+
+        busy = true;
+        message = null;
+        try
+        {
+            var info = await State.RunAsync(() => ServerInfo.Query(effective));
+            failed = false;
+            message = $"Connected to {info.DatabaseName} on {info.ServerName} ({info.Platform}, {info.ProductVersion}).";
+        }
+        catch (Exception e) when (e is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or ArgumentException or AggregateException)
+        {
+            Fail(e.Message);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private void SaveLink()
+    {
+        if (State.Folder is null || Effective() is null)
+        {
+            return;
+        }
+
+        var stored = ConnectionStrings.WithoutPassword(connection!, out var removed);
+        State.Links.Save(new Link(State.Folder, stored, mode));
+        if (State.CurrentLink is { } saved)
+        {
+            State.RememberPassword(saved.Folder, removed ? new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(connection).Password : password);
+        }
+
+        links = [.. State.Links.All()];
+        connection = stored;
+        failed = false;
+        message = removed
+            ? "Link saved. The password wasn't saved; sql-sc will use it until this window's sql-sc ui exits."
+            : "Link saved.";
+        State.NotifyChanged();
+    }
+
+    private void RemoveLink()
+    {
+        if (State.CurrentLink is { } link)
+        {
+            State.Links.Remove(link.Folder);
+            State.RememberPassword(link.Folder, null);
+        }
+
+        links = [.. State.Links.All()];
+        LoadLink();
+        failed = false;
+        message = "Link removed.";
+        State.NotifyChanged();
+    }
+
+    private void Fail(string text)
+    {
+        failed = true;
+        message = text;
+    }
+
+    private static bool IsValid(string value)
+    {
+        try
+        {
+            _ = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(value);
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+}

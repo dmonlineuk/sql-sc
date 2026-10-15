@@ -13,6 +13,7 @@ using SqlSc.Core.Modeling;
 using SqlSc.Core.Settings;
 using SqlSc.Core.StaticData;
 using SqlSc.Core.WorkingFolders;
+using SqlSc.Web;
 
 var json = new JsonSerializerOptions
 {
@@ -505,10 +506,40 @@ apply.SetAction(result =>
     return applied.Problems.Count > 0 ? 1 : 0;
 });
 
-var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, changeLog, link, data, doctor, export, commit, apply };
+var uiFolderArgument = new Argument<DirectoryInfo?>("folder") { Description = "Working folder to open first.", Arity = ArgumentArity.ZeroOrOne };
+var portOption = new Option<int>("--port") { Description = "Local port to listen on. Defaults to a free port." };
+var noBrowserOption = new Option<bool>("--no-browser") { Description = "Print the address instead of opening a browser." };
+var ui = new Command("ui", "Open the local web UI (Setup, Commit). It listens on 127.0.0.1 only; press Ctrl+C to stop it.")
+{
+    uiFolderArgument,
+    portOption,
+    noBrowserOption,
+};
+ui.SetAction(async (result, cancellationToken) =>
+{
+    var startFolder = result.GetValue(uiFolderArgument)?.FullName;
+    if (startFolder is not null)
+    {
+        WorkingFolder.Open(startFolder);
+    }
+
+    await using var web = WebUi.Create(result.GetValue(portOption), startFolder);
+    await web.StartAsync();
+    Console.WriteLine($"sql-sc ui is running at {web.LaunchUri}");
+    Console.WriteLine("The address includes a token that lets this browser in; don't share it. Press Ctrl+C to stop.");
+    if (!result.GetValue(noBrowserOption) && !OpenBrowser(web.LaunchUri))
+    {
+        Console.WriteLine("Couldn't open a browser; open the address above yourself.");
+    }
+
+    await web.WaitForShutdownAsync(cancellationToken);
+    return 0;
+});
+
+var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, changeLog, link, data, doctor, export, commit, apply, ui };
 try
 {
-    return root.Parse(args).Invoke(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
+    return await root.Parse(args).InvokeAsync(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
 }
 catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or Microsoft.Data.SqlClient.SqlException)
 {
@@ -716,6 +747,22 @@ static string? ResolveConnection(string? value, string folder, bool required = t
     }
 
     return connection;
+}
+
+static bool OpenBrowser(Uri uri)
+{
+    var start = OperatingSystem.IsWindows()
+        ? new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri) { UseShellExecute = true }
+        : new System.Diagnostics.ProcessStartInfo(OperatingSystem.IsMacOS() ? "open" : "xdg-open", uri.AbsoluteUri);
+    try
+    {
+        using var process = System.Diagnostics.Process.Start(start);
+        return process is not null;
+    }
+    catch (System.ComponentModel.Win32Exception)
+    {
+        return false;
+    }
 }
 
 static string ReadPassword()

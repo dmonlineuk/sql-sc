@@ -1,0 +1,34 @@
+:root { --border: #d0d7de; --muted: #57606a; --accent: #0969da; --add: #e6ffec; --del: #ffebe9; --warn: #9a6700; }
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; color: #1f2328; background: #f6f8fa; }
+header.top { display: flex; gap: 1.5rem; align-items: center; padding: .6rem 1.2rem; background: #24292f; color: #fff; }
+header.top .brand { font-weight: 600; }
+header.top nav a { color: #d0d7de; text-decoration: none; margin-right: 1rem; }
+header.top nav a.active { color: #fff; border-bottom: 2px solid #fff; }
+header.top .folder { margin-left: auto; color: #d0d7de; font-size: 12px; }
+main { padding: 1.2rem; max-width: 1600px; margin: 0 auto; }
+section.card { background: #fff; border: 1px solid var(--border); border-radius: 6px; padding: 1rem; margin-bottom: 1rem; }
+h2 { margin: 0 0 .8rem; font-size: 16px; }
+label { display: block; margin: .5rem 0 .2rem; font-weight: 500; }
+input[type=text], input[type=password], textarea, select { width: 100%; padding: .35rem .5rem; border: 1px solid var(--border); border-radius: 4px; font: inherit; }
+textarea { min-height: 4rem; }
+button { padding: .35rem .9rem; border: 1px solid var(--border); border-radius: 4px; background: #f6f8fa; font: inherit; cursor: pointer; }
+button.primary { background: #1f883d; border-color: #1f883d; color: #fff; }
+button:disabled { opacity: .5; cursor: default; }
+.row { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin-top: .6rem; }
+.muted { color: var(--muted); }
+.ok { color: #1a7f37; }
+.error { color: #cf222e; white-space: pre-wrap; }
+.warn { color: var(--warn); }
+table.grid { width: 100%; border-collapse: collapse; }
+table.grid th, table.grid td { text-align: left; padding: .3rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+table.grid tr.selected { background: #ddf4ff; }
+table.grid tbody tr { cursor: pointer; }
+.split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 1rem; }
+.diff { width: 100%; border-collapse: collapse; font: 12px/1.4 ui-monospace, Consolas, monospace; table-layout: fixed; }
+.diff td { padding: 0 .4rem; white-space: pre-wrap; word-break: break-all; vertical-align: top; }
+.diff td.num { width: 3.5rem; color: var(--muted); text-align: right; user-select: none; }
+.diff td.del { background: var(--del); }
+.diff td.add { background: var(--add); }
+.diff tr.hunk td { background: #ddf4ff; color: var(--muted); }
+.diff th { text-align: left; font-weight: 500; padding: .3rem .4rem; border-bottom: 1px solid var(--border); }

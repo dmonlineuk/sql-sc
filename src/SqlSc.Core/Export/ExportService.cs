@@ -45,6 +45,7 @@ public static class ExportService
     /// <param name="writeIfProblems">Whether to write the files that can be exported when others can't.</param>
     /// <param name="dryRun">Whether to only work out each file's <see cref="ExportedFile.Diff"/>, writing and deleting nothing.</param>
     /// <param name="baseline">Where the baseline is kept; null to keep none.</param>
+    /// <param name="includeChangedBy">Whether to look up who last changed each object even when <see cref="ExportSelection.Mine"/> is off.</param>
     public static ExportResult Export(
         WorkingFolder folder,
         string connectionString,
@@ -52,9 +53,10 @@ public static class ExportService
         bool fullExtract = false,
         bool writeIfProblems = true,
         bool dryRun = false,
-        BaselineStore? baseline = null)
+        BaselineStore? baseline = null,
+        bool includeChangedBy = false)
     {
-        using var session = StatusService.Open(folder, connectionString, includeChangedBy: selection.Mine, fullExtract, baselineStore: baseline);
+        using var session = StatusService.Open(folder, connectionString, includeChangedBy: selection.Mine || includeChangedBy, fullExtract, baselineStore: baseline);
         var report = session.Report;
         var problems = new List<string>();
         var skipped = new List<string>();

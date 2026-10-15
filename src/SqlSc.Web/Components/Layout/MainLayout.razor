@@ -1,0 +1,23 @@
+@inherits LayoutComponentBase
+@implements IDisposable
+@inject UiState State
+
+<header class="top">
+    <span class="brand">sql-sc</span>
+    <nav>
+        <NavLink href="" Match="NavLinkMatch.All">Setup</NavLink>
+        <NavLink href="commit">Commit</NavLink>
+    </nav>
+    <span class="folder" title="@State.Folder">@(State.CurrentLink is { } link ? $"{Path.GetFileName(link.Folder)} - {ConnectionStrings.Describe(link.Connection)} ({link.Mode})" : "No folder linked")</span>
+</header>
+<main>
+    @Body
+</main>
+
+@code {
+    protected override void OnInitialized() => State.Changed += Refresh;
+
+    public void Dispose() => State.Changed -= Refresh;
+
+    private void Refresh() => InvokeAsync(StateHasChanged);
+}
