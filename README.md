@@ -4,6 +4,28 @@ A free, MIT-licensed replacement for the core of Redgate SQL Source Control. It 
 
 **Status:** Phase 1 in progress. See [docs/phase0-findings.md](docs/phase0-findings.md).
 
+## Getting started
+
+1. **Install sql-sc**, in one of these ways:
+   - **Stand-alone executable** (no .NET needed): download the `sql-sc-win-x64` or `sql-sc-linux-x64` artifact from a
+     [CI run](https://github.com/dmonlineuk/sql-sc/actions/workflows/ci.yml) on `main`, or publish it yourself (see below).
+   - **.NET tool** (needs the .NET 10 runtime): download the `sql-sc-dotnet-tool` artifact, unzip it, then run
+     `dotnet tool install --global sql-sc --add-source <folder containing sql-sc.*.nupkg>`.
+2. **Link** your working folder to its database. This is saved per user, never in the repo, and never saves a password:
+   ```sh
+   sql-sc link path/to/working-folder --connection "Server=myserver;Database=MyDb;Authentication=Active Directory Interactive" --mode shared
+   ```
+3. **Check** the connection, permissions and folder: `sql-sc doctor path/to/working-folder`
+4. **See what differs**, and on which side: `sql-sc status path/to/working-folder --diff`
+5. **Commit** your database changes to the folder: preview with `sql-sc export path/to/working-folder --all --dry-run`,
+   then `sql-sc commit path/to/working-folder -m "Add Customer.Email" Sales.Customer`.
+6. **Get latest** from the folder into the database: preview with `sql-sc apply path/to/working-folder --all --script-only`,
+   then run it without `--script-only`. On a shared database sql-sc asks before each change, since it changes the
+   database for everyone.
+
+Add `--data` to `export`, `commit` and `apply` to include static data (see `sql-sc data link`). `sql-sc <command> --help`
+lists every option.
+
 ## Build
 
 Needs the .NET 10 SDK. Integration tests also need Docker (they start SQL Server 2022 with Testcontainers).
@@ -24,6 +46,8 @@ dotnet publish src/SqlSc.Cli -p:PublishProfile=linux-x64   # artifacts/publish/l
 ```
 
 Copy that one file across; nothing else is needed to run it. `THIRD-PARTY-NOTICES.md` is published next to it: it covers the Microsoft `master.dacpac` files built into sql-sc, which are not MIT-licensed. Either profile can be built on Windows or Linux. CI also uploads both as build artifacts (`sql-sc-win-x64`, `sql-sc-linux-x64`).
+
+`dotnet pack src/SqlSc.Cli -o artifacts/package` builds the .NET tool package, which CI uploads as `sql-sc-dotnet-tool`.
 
 On its first run the executable unpacks itself to `%TEMP%\.net` (`$TMPDIR/.net` on Linux). If that folder isn't writable, set `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to one that is.
 
@@ -65,6 +89,7 @@ dotnet run --project src/SqlSc.Cli -- commit path/to/working-folder -m "My chang
 # Get latest: deploy the folder's version of objects to the database. --script-only prints the script and changes nothing
 dotnet run --project src/SqlSc.Cli -- apply path/to/working-folder --all --script-only
 dotnet run --project src/SqlSc.Cli -- apply path/to/working-folder Sales.Customer "[Sales].[GetCustomer]"
+dotnet run --project src/SqlSc.Cli -- apply path/to/working-folder --all --yes   # don't ask before each change, e.g. in scripts
 
 # Static data: track a table's rows in Data\Sales.Customer_Data.sql (listed in RedGateDatabaseInfo.xml), then export them
 dotnet run --project src/SqlSc.Cli -- data link path/to/working-folder Sales.Customer
@@ -81,6 +106,12 @@ shared database this changes it for everyone. `--all` never drops objects that a
 it. Changes that could lose data (dropping a column, or a table with rows) stop the deployment unless you pass
 `--allow-data-loss`. Objects whose last change in the database was made by another login are refused unless you pass
 `--force`; this uses the change log or the default trace, so on Azure SQL Database or Hyperscale it needs the change log.
+
+On a shared database (a link's default mode, and the mode when there's no link) `apply` lists each change and asks
+before running anything: `y` yes, `n` no, `a` yes to the rest, `q` no to the rest. `--yes` skips this, and is needed with
+`--json` or when input is redirected. `--script-only` never asks. Every deployment script that runs is saved for audit
+in `deployments` next to `links.json`, with the time, server, database, login, working folder, git commit, the changes
+and the outcome. Connection strings and passwords are never written.
 
 sql-sc keeps a baseline of each object from the last time the database and the folder matched, so `status` can say where
 each difference came from ("Changed in"): `Database` (changed on the server since), `Folder` (changed in the folder, e.g.

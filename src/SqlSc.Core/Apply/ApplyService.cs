@@ -27,6 +27,7 @@ public sealed record AppliedObject(ApplyAction Action, string ObjectType, string
 /// <see cref="Script"/> is DacFx's deployment script for the selected objects (SQLCMD mode), or null if there was nothing to script.
 /// <see cref="Data"/> are the static data tables whose rows change, and <see cref="DataScript"/> their script on a script-only run.
 /// <see cref="Applied"/> is whether the changes were made. <see cref="Skipped"/> says why objects picked by <c>--all</c> were left out.
+/// <see cref="Declined"/> are the changes the user chose not to make, and <see cref="SavedScript"/> the audit copy of what ran.
 /// </summary>
 public sealed record ApplyResult(
     StatusReport Status,
@@ -37,7 +38,15 @@ public sealed record ApplyResult(
     bool Applied,
     IReadOnlyList<AppliedData> Data,
     string? DataScript = null,
-    IReadOnlyList<string>? Skipped = null);
+    IReadOnlyList<string>? Skipped = null,
+    IReadOnlyList<string>? Declined = null,
+    string? SavedScript = null);
+
+/// <summary>The planned changes the user agreed to make.</summary>
+public sealed record ApplyChoice(IReadOnlyList<AppliedObject> Objects, IReadOnlyList<AppliedData> Data);
+
+/// <summary>Asks which of the planned changes to make. Called once, before anything is scripted or run, and never on a script-only run.</summary>
+public delegate ApplyChoice ApplyConfirmation(StatusReport status, IReadOnlyList<AppliedObject> objects, IReadOnlyList<AppliedData> data);
 
 /// <summary>
 /// Deploys the working folder's version of selected objects and static data to the database (Get latest).
@@ -57,6 +66,8 @@ public static class ApplyService
     /// last matched the folder.
     /// </param>
     /// <param name="baseline">Where the baseline is kept; null to keep none.</param>
+    /// <param name="confirm">Asks which changes to make; null to make them all.</param>
+    /// <param name="log">Where a copy of each script that runs is saved; null to save none.</param>
     public static ApplyResult Apply(
         WorkingFolder folder,
         string connectionString,
@@ -67,7 +78,9 @@ public static class ApplyService
         bool allowDataLoss = false,
         bool force = false,
         bool fullExtract = false,
-        BaselineStore? baseline = null)
+        BaselineStore? baseline = null,
+        ApplyConfirmation? confirm = null,
+        DeploymentLog? log = null)
     {
         using var session = StatusService.Open(folder, connectionString, includeChangedBy: true, fullExtract, baselineStore: baseline);
         var report = session.Report;
@@ -111,15 +124,31 @@ public static class ApplyService
                 c.File,
                 c.LastChange))
             .ToList();
+        var declined = new List<string>();
+        if (confirm is not null && !scriptOnly && problems.Count == 0 && objects.Count + appliedData.Count > 0)
+        {
+            var choice = confirm(report, objects, appliedData);
+            var keptObjects = choice.Objects.Select(o => o.Name).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var keptData = choice.Data.Select(d => d.File).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            declined.AddRange(objects.Where(o => !keptObjects.Contains(o.Name)).Select(o => o.Name));
+            declined.AddRange(appliedData.Where(d => !keptData.Contains(d.File)).Select(d => $"{d.Table} (data)"));
+            selected = selected.Where(c => keptObjects.Contains(c.Name)).ToList();
+            objects = objects.Where(o => keptObjects.Contains(o.Name)).ToList();
+            dataTables = dataTables.Where(d => keptData.Contains(d.Table.File)).ToList();
+            appliedData = appliedData.Where(d => keptData.Contains(d.File)).ToList();
+        }
+
+        string? savedScript = null;
+        var messages = new List<string>();
         if (selected.Count == 0 && dataTables.Count == 0)
         {
-            return new ApplyResult(report, objects, null, [], problems, false, appliedData, Skipped: skipped);
+            return Result(null, false);
         }
 
         var script = selected.Count == 0 ? null : SchemaScript(folder, session, objects, selected, allowDataLoss, problems);
         if (selected.Count > 0 && script is null)
         {
-            return new ApplyResult(report, objects, null, [], problems, false, appliedData, Skipped: skipped);
+            return Result(null, false);
         }
 
         string? dataScript = null;
@@ -137,10 +166,18 @@ public static class ApplyService
             }
         }
 
-        var messages = new List<string>();
         if (scriptOnly || problems.Count > 0)
         {
-            return new ApplyResult(report, objects, script, messages, problems, false, appliedData, dataScript, skipped);
+            return Result(script, false, dataScript);
+        }
+
+        if (log is not null)
+        {
+            savedScript = log.Start(report, folder.RootPath, ExportService.CurrentLogin(connectionString), objects, appliedData, DateTime.UtcNow);
+            if (script is not null)
+            {
+                DeploymentLog.Append(savedScript, script);
+            }
         }
 
         if (script is not null)
@@ -154,7 +191,8 @@ public static class ApplyService
             catch (SqlException ex)
             {
                 problems.Add($"Applying failed, and its transaction was rolled back: {ex.Message}");
-                return new ApplyResult(report, objects, script, messages, problems, false, appliedData, Skipped: skipped);
+                Finish("failed, and its transaction was rolled back: " + ex.Message);
+                return Result(script, false);
             }
         }
 
@@ -162,17 +200,42 @@ public static class ApplyService
         {
             try
             {
-                appliedData = StaticDataService.Run(connectionString, folder, dataTables);
+                appliedData = StaticDataService.Run(
+                    connectionString,
+                    folder,
+                    dataTables,
+                    dataSteps => Append("\r\n-- Static data\r\n" + dataSteps));
             }
             catch (Exception ex) when (ex is SqlException or InvalidDataException)
             {
                 var schema = script is null ? "" : " The schema changes were applied.";
                 problems.Add($"Applying static data failed, and its transaction was rolled back.{schema} {ex.Message}");
-                return new ApplyResult(report, objects, script, messages, problems, script is not null, appliedData, Skipped: skipped);
+                Finish($"static data failed, and its transaction was rolled back.{schema} {ex.Message}");
+                return Result(script, script is not null);
             }
         }
 
-        return new ApplyResult(report, objects, script, messages, problems, true, appliedData, Skipped: skipped);
+        Finish("applied");
+        return Result(script, true);
+
+        ApplyResult Result(string? schemaScript, bool applied, string? previewDataScript = null) =>
+            new(report, objects, schemaScript, messages, problems, applied, appliedData, previewDataScript, skipped, declined, savedScript);
+
+        void Append(string text)
+        {
+            if (savedScript is not null)
+            {
+                DeploymentLog.Append(savedScript, text);
+            }
+        }
+
+        void Finish(string outcome)
+        {
+            if (savedScript is not null)
+            {
+                DeploymentLog.Finish(savedScript, outcome);
+            }
+        }
     }
 
     /// <summary>DacFx's deployment script for the selected objects, or null if it can't be generated (the reasons are added to <paramref name="problems"/>).</summary>

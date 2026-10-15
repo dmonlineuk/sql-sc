@@ -49,6 +49,62 @@ public class ApplyTests(SqlServerFixture sql)
     }
 
     [Fact]
+    public void OnlyConfirmedChangesAreAppliedAndTheirScriptIsSaved()
+    {
+        var database = ChangedDatabase();
+        var log = NewLog();
+        var connection = sql.ConnectionString(database);
+
+        var applied = ApplyService.Apply(
+            Demo,
+            connection,
+            [],
+            all: true,
+            confirm: (_, objects, data) => new ApplyChoice(objects.Where(o => o.Name == "[Sales].[GetCustomer]").ToList(), data),
+            log: log);
+
+        Assert.True(applied.Applied, string.Join(Environment.NewLine, applied.Problems));
+        Assert.Equal(["[Sales].[GetCustomer]"], applied.Objects.Select(o => o.Name));
+        Assert.Equal(["[Sales].[ActiveCustomer]"], applied.Declined);
+        Assert.Equal(
+            ["[Sales].[ActiveCustomer]", "[Sales].[Order]"],
+            StatusService.GetStatus(Demo, connection, includeChangedBy: false).Changes.Select(c => c.Name).Order());
+        var saved = Assert.Single(Directory.GetFiles(log.Directory));
+        Assert.Equal(saved, applied.SavedScript);
+        var text = File.ReadAllText(saved);
+        Assert.Contains($"-- Database: {database}", text, StringComparison.Ordinal);
+        Assert.Contains("--   Alter ", text, StringComparison.Ordinal);
+        Assert.Contains("ALTER PROCEDURE [Sales].[GetCustomer]", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("ActiveCustomer", text, StringComparison.Ordinal);
+        Assert.DoesNotContain(new SqlConnectionStringBuilder(connection).Password, text, StringComparison.Ordinal);
+        Assert.EndsWith("-- Result: applied", text.TrimEnd(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DecliningEverythingChangesNothingAndScriptOnlyNeverAsks()
+    {
+        var database = ChangedDatabase();
+        var log = NewLog();
+
+        var declined = ApplyService.Apply(Demo, sql.ConnectionString(database), [], all: true, confirm: (_, _, _) => new ApplyChoice([], []), log: log);
+        var preview = ApplyService.Apply(
+            Demo,
+            sql.ConnectionString(database),
+            [],
+            all: true,
+            scriptOnly: true,
+            confirm: (_, _, _) => throw new InvalidOperationException("asked on a script-only run"),
+            log: log);
+
+        Assert.False(declined.Applied);
+        Assert.Empty(declined.Objects);
+        Assert.Equal(["[Sales].[ActiveCustomer]", "[Sales].[GetCustomer]"], declined.Declined!.Order());
+        Assert.NotNull(preview.Script);
+        Assert.False(Directory.Exists(log.Directory));
+        Assert.Equal(3, StatusService.GetStatus(Demo, sql.ConnectionString(database), includeChangedBy: false).Changes.Count);
+    }
+
+    [Fact]
     public void NamingADatabaseOnlyObjectDropsIt()
     {
         var database = ChangedDatabase();
@@ -67,10 +123,12 @@ public class ApplyTests(SqlServerFixture sql)
         sql.Execute(database, "ALTER TABLE [Sales].[Customer] ADD [Email] nvarchar(200) NULL");
         sql.Execute(database, "INSERT INTO [Sales].[Customer] ([Name], [Email]) VALUES (N'Ann', N'ann@example.com')");
 
-        var blocked = ApplyService.Apply(Demo, sql.ConnectionString(database), ["Sales.Customer"]);
+        var log = NewLog();
+        var blocked = ApplyService.Apply(Demo, sql.ConnectionString(database), ["Sales.Customer"], log: log);
 
         Assert.False(blocked.Applied);
         Assert.Contains(blocked.Problems, p => p.Contains("rolled back", StringComparison.Ordinal));
+        Assert.Contains("-- Result: failed, and its transaction was rolled back", File.ReadAllText(blocked.SavedScript!), StringComparison.Ordinal);
         Assert.Equal(1, Scalar(database, "SELECT COUNT(*) FROM sys.columns WHERE name = 'Email'"));
 
         var allowed = ApplyService.Apply(Demo, sql.ConnectionString(database), ["Sales.Customer"], allowDataLoss: true);
@@ -128,6 +186,8 @@ public class ApplyTests(SqlServerFixture sql)
 
         Assert.Empty(StatusService.GetStatus(WorkingFolder.Open(folder), sql.ConnectionString(database), includeChangedBy: false).Changes);
     }
+
+    private static DeploymentLog NewLog() => new(Path.Combine(Path.GetTempPath(), "sql-sc-tests", Guid.NewGuid().ToString("N")));
 
     private string ChangedDatabase()
     {

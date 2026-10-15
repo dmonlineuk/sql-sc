@@ -35,6 +35,7 @@ jobs:
           dotnet-version: 10.0.x
       - run: dotnet publish src/SqlSc.Cli -p:PublishProfile=win-x64
       - run: dotnet publish src/SqlSc.Cli -p:PublishProfile=linux-x64
+      - run: dotnet pack src/SqlSc.Cli -o artifacts/package
       - uses: actions/upload-artifact@v4
         with:
           name: sql-sc-win-x64
@@ -43,3 +44,7 @@ jobs:
         with:
           name: sql-sc-linux-x64
           path: artifacts/publish/linux-x64/sql-sc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sql-sc-dotnet-tool
+          path: artifacts/package/*.nupkg

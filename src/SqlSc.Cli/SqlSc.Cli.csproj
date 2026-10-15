@@ -6,6 +6,15 @@
     <RootNamespace>SqlSc.Cli</RootNamespace>
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>sql-sc</ToolCommandName>
+    <Version>0.1.0</Version>
+    <PackageId>sql-sc</PackageId>
+    <Authors>sql-sc contributors</Authors>
+    <Description>Database-first source control for SQL Server: a free replacement for the core of Redgate SQL Source Control, using the Redgate working-folder layout.</Description>
+    <PackageTags>sql-server;source-control;dacfx;database;redgate</PackageTags>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/dmonlineuk/sql-sc</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/dmonlineuk/sql-sc</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,7 +26,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" />
+    <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Pack="true" PackagePath="/" />
+    <None Include="..\..\README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 
 </Project>
