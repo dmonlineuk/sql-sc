@@ -290,13 +290,21 @@ public static class StaticDataService
         + string.Concat(steps.Select(s => s.Sql + "\r\nGO\r\n"))
         + "COMMIT TRANSACTION;\r\nGO\r\n";
 
-    /// <summary>Runs <paramref name="steps"/> in one transaction, which is rolled back if any fails. Returns the rows changed in each table.</summary>
-    internal static IReadOnlyList<AppliedData> Run(string connectionString, WorkingFolder folder, IReadOnlyList<(TrackedTable Table, bool DeleteRows)> tables)
+    /// <summary>
+    /// Changes the rows of <paramref name="tables"/> in one transaction, which is rolled back if any step fails. Returns the rows
+    /// changed in each table. <paramref name="planned"/> gets the script of the steps before they run.
+    /// </summary>
+    internal static IReadOnlyList<AppliedData> Run(
+        string connectionString,
+        WorkingFolder folder,
+        IReadOnlyList<(TrackedTable Table, bool DeleteRows)> tables,
+        Action<string>? planned = null)
     {
         using var connection = new SqlConnection(connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction();
         var steps = Plan(connection, transaction, folder, tables);
+        planned?.Invoke(ScriptOf(steps));
         var counts = new Dictionary<(string Table, RowAction Action), int>();
         foreach (var step in steps)
         {

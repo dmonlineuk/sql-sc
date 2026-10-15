@@ -451,9 +451,10 @@ var applyAllOption = new Option<bool>("--all") { Description = "Every object tha
 var scriptOnlyOption = new Option<bool>("--script-only") { Description = "Print the deployment script and change nothing." };
 var allowDataLossOption = new Option<bool>("--allow-data-loss") { Description = "Allow changes that could lose data, such as dropping a column, or a table that has rows." };
 var forceOption = new Option<bool>("--force") { Description = "Apply objects even if they changed in the database since they last matched the folder, changed on both sides, or another login made their last change in the database." };
+var yesOption = new Option<bool>("--yes", "-y") { Description = "Don't ask before each change to a shared database. Needed when input is redirected or with --json." };
 var apply = new Command("apply", "Deploy the working folder's version of objects to the database (Get latest). In shared mode this changes the database for everyone.")
 {
-    folderArgument, applyObjectsArgument, applyAllOption, dataOption, scriptOnlyOption, allowDataLossOption, forceOption, connectionOption, fullExtractOption, jsonOption,
+    folderArgument, applyObjectsArgument, applyAllOption, dataOption, scriptOnlyOption, allowDataLossOption, forceOption, yesOption, connectionOption, fullExtractOption, jsonOption,
 };
 apply.SetAction(result =>
 {
@@ -471,6 +472,14 @@ apply.SetAction(result =>
     }
 
     var scriptOnly = result.GetValue(scriptOnlyOption);
+    var asJson = result.GetValue(jsonOption);
+    var ask = !scriptOnly && !result.GetValue(yesOption) && (LinkStore.Default.FindFor(folder.RootPath)?.Mode ?? DatabaseMode.Shared) == DatabaseMode.Shared;
+    if (ask && (asJson || Console.IsInputRedirected))
+    {
+        Console.Error.WriteLine("apply asks before each change to a shared database. Pass --yes to apply without asking, or --script-only to preview.");
+        return 2;
+    }
+
     var applied = ApplyService.Apply(
         folder,
         connection,
@@ -481,10 +490,12 @@ apply.SetAction(result =>
         result.GetValue(allowDataLossOption),
         result.GetValue(forceOption),
         result.GetValue(fullExtractOption),
-        BaselineStore.Default);
-    if (result.GetValue(jsonOption))
+        BaselineStore.Default,
+        ask ? new ApplyPrompt(Console.In, Console.Out).Confirm : null,
+        DeploymentLog.Default);
+    if (asJson)
     {
-        Console.WriteLine(JsonSerializer.Serialize(new { applied.Objects, applied.Data, applied.Applied, applied.Problems, applied.Skipped, applied.Messages, applied.Script, applied.DataScript }, json));
+        Console.WriteLine(JsonSerializer.Serialize(new { applied.Objects, applied.Data, applied.Applied, applied.Problems, applied.Skipped, applied.Declined, applied.Messages, applied.Script, applied.DataScript, applied.SavedScript }, json));
     }
     else
     {
@@ -575,7 +586,7 @@ static void WriteExport(ExportResult exported, bool dryRun = false)
 static void WriteApply(ApplyResult applied, bool scriptOnly)
 {
     Console.WriteLine($"{applied.Status.Server}/{applied.Status.Database}");
-    if (applied.Objects.Count == 0 && applied.Data.Count == 0 && applied.Problems.Count == 0)
+    if (applied.Objects.Count == 0 && applied.Data.Count == 0 && applied.Problems.Count == 0 && applied.Declined is not { Count: > 0 })
     {
         Console.WriteLine("No differences.");
     }
@@ -594,6 +605,11 @@ static void WriteApply(ApplyResult applied, bool scriptOnly)
     foreach (var skipped in applied.Skipped ?? [])
     {
         Console.WriteLine($"  Skipped: {skipped}");
+    }
+
+    foreach (var declined in applied.Declined ?? [])
+    {
+        Console.WriteLine($"  Declined: {declined}");
     }
 
     foreach (var problem in applied.Problems)
@@ -623,9 +639,14 @@ static void WriteApply(ApplyResult applied, bool scriptOnly)
     {
         Console.WriteLine(Invariant($"Applied {applied.Objects.Count} object(s) and the static data of {applied.Data.Count} table(s)."));
     }
-    else if (applied.Objects.Count > 0 || applied.Data.Count > 0)
+    else if (applied.Objects.Count > 0 || applied.Data.Count > 0 || applied.Declined is { Count: > 0 })
     {
         Console.WriteLine("Nothing was applied.");
+    }
+
+    if (applied.SavedScript is not null)
+    {
+        Console.WriteLine($"Deployment script saved to {applied.SavedScript}");
     }
 }
 
