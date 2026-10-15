@@ -81,7 +81,8 @@ status.SetAction(result =>
         connection,
         includeChangedBy: !result.GetValue(noChangedByOption),
         fullExtract: result.GetValue(fullExtractOption),
-        includeDifferences: result.GetValue(diffOption));
+        includeDifferences: result.GetValue(diffOption),
+        baseline: BaselineStore.Default);
 
     if (result.GetValue(jsonOption))
     {
@@ -108,10 +109,22 @@ status.SetAction(result =>
         Console.WriteLine("No differences.");
     }
 
+    if (report.Changes.Count > 0)
+    {
+        Console.WriteLine($"  {"Status",-9} {"Type",-24} {"Name",-50} {"Changed in",-10} Changed by");
+    }
+
     foreach (var change in report.Changes)
     {
         var who = change.LastChange is { } e ? Invariant($"{e.LoginName} {e.StartTime:yyyy-MM-dd HH:mm}") : "Unknown";
-        Console.WriteLine($"  {change.Status,-9} {change.ObjectType,-24} {change.Name,-50} {who}");
+        var side = change.Side switch
+        {
+            ChangeSide.Database => "Database",
+            ChangeSide.Folder => "Folder",
+            ChangeSide.Both => "Conflict",
+            _ => "Unknown",
+        };
+        Console.WriteLine($"  {change.Status,-9} {change.ObjectType,-24} {change.Name,-50} {side,-10} {who}");
         if (change.Difference is not null)
         {
             Console.WriteLine($"      First difference: {change.Difference}");
@@ -379,10 +392,11 @@ var mineOption = new Option<bool>("--mine") { Description = "Objects whose last 
 var messageOption = new Option<string>("--message", "-m") { Description = "Commit message.", Required = true };
 var dataOption = new Option<bool>("--data") { Description = "Include the rows of selected static data tables (see `data link`). Without it only schema is included." };
 var dryRunOption = new Option<bool>("--dry-run") { Description = "Show the diff of each file export would write or delete, without changing anything." };
+var exportForceOption = new Option<bool>("--force") { Description = "Export objects even if they changed in the folder since they last matched the database, or changed on both sides." };
 
 var export = new Command("export", "Write objects from the database into the working folder. Files of objects dropped from the database are deleted.")
 {
-    folderArgument, objectsArgument, allOption, mineOption, dataOption, dryRunOption, connectionOption, fullExtractOption, jsonOption,
+    folderArgument, objectsArgument, allOption, mineOption, dataOption, dryRunOption, exportForceOption, connectionOption, fullExtractOption, jsonOption,
 };
 export.SetAction(result =>
 {
@@ -392,10 +406,10 @@ export.SetAction(result =>
     }
 
     var dryRun = result.GetValue(dryRunOption);
-    var exported = ExportService.Export(folder, connection, selection, result.GetValue(fullExtractOption), dryRun: dryRun);
+    var exported = ExportService.Export(folder, connection, selection, result.GetValue(fullExtractOption), dryRun: dryRun, baseline: BaselineStore.Default);
     if (result.GetValue(jsonOption))
     {
-        Console.WriteLine(JsonSerializer.Serialize(new { exported.Files, exported.Problems }, json));
+        Console.WriteLine(JsonSerializer.Serialize(new { exported.Files, exported.Problems, exported.Skipped }, json));
     }
     else
     {
@@ -407,7 +421,7 @@ export.SetAction(result =>
 
 var commit = new Command("commit", "Export objects, then git commit exactly their files. Nothing else that is staged or changed is committed.")
 {
-    folderArgument, objectsArgument, messageOption, allOption, mineOption, dataOption, connectionOption, fullExtractOption, jsonOption,
+    folderArgument, objectsArgument, messageOption, allOption, mineOption, dataOption, exportForceOption, connectionOption, fullExtractOption, jsonOption,
 };
 commit.SetAction(result =>
 {
@@ -416,10 +430,10 @@ commit.SetAction(result =>
         return 2;
     }
 
-    var committed = CommitService.Commit(folder, connection, selection, result.GetRequiredValue(messageOption), result.GetValue(fullExtractOption));
+    var committed = CommitService.Commit(folder, connection, selection, result.GetRequiredValue(messageOption), result.GetValue(fullExtractOption), BaselineStore.Default);
     if (result.GetValue(jsonOption))
     {
-        Console.WriteLine(JsonSerializer.Serialize(new { committed.Export.Files, committed.Export.Problems, committed.CommittedFiles, committed.Commit }, json));
+        Console.WriteLine(JsonSerializer.Serialize(new { committed.Export.Files, committed.Export.Problems, committed.Export.Skipped, committed.CommittedFiles, committed.Commit }, json));
     }
     else
     {
@@ -436,7 +450,7 @@ var applyObjectsArgument = new Argument<string[]>("objects") { Description = "Ob
 var applyAllOption = new Option<bool>("--all") { Description = "Every object that differs, except objects only in the database, which are dropped only when named." };
 var scriptOnlyOption = new Option<bool>("--script-only") { Description = "Print the deployment script and change nothing." };
 var allowDataLossOption = new Option<bool>("--allow-data-loss") { Description = "Allow changes that could lose data, such as dropping a column, or a table that has rows." };
-var forceOption = new Option<bool>("--force") { Description = "Apply objects even if another login made their last change in the database (needs the change log or the default trace)." };
+var forceOption = new Option<bool>("--force") { Description = "Apply objects even if they changed in the database since they last matched the folder, changed on both sides, or another login made their last change in the database." };
 var apply = new Command("apply", "Deploy the working folder's version of objects to the database (Get latest). In shared mode this changes the database for everyone.")
 {
     folderArgument, applyObjectsArgument, applyAllOption, dataOption, scriptOnlyOption, allowDataLossOption, forceOption, connectionOption, fullExtractOption, jsonOption,
@@ -466,10 +480,11 @@ apply.SetAction(result =>
         scriptOnly,
         result.GetValue(allowDataLossOption),
         result.GetValue(forceOption),
-        result.GetValue(fullExtractOption));
+        result.GetValue(fullExtractOption),
+        BaselineStore.Default);
     if (result.GetValue(jsonOption))
     {
-        Console.WriteLine(JsonSerializer.Serialize(new { applied.Objects, applied.Data, applied.Applied, applied.Problems, applied.Messages, applied.Script, applied.DataScript }, json));
+        Console.WriteLine(JsonSerializer.Serialize(new { applied.Objects, applied.Data, applied.Applied, applied.Problems, applied.Skipped, applied.Messages, applied.Script, applied.DataScript }, json));
     }
     else
     {
@@ -507,7 +522,7 @@ ExportSelection? Selection(ParseResult result)
         return null;
     }
 
-    return new ExportSelection(names, all, mine, result.GetValue(dataOption));
+    return new ExportSelection(names, all, mine, result.GetValue(dataOption), result.GetValue(exportForceOption));
 }
 
 (WorkingFolder Folder, string Connection)? Connect(ParseResult result)
@@ -532,6 +547,11 @@ static void WriteExport(ExportResult exported, bool dryRun = false)
             _ => file.Action.ToString(),
         };
         Console.WriteLine($"  {action,-12} {file.Path}");
+    }
+
+    foreach (var skipped in exported.Skipped)
+    {
+        Console.WriteLine($"  Skipped: {skipped}");
     }
 
     foreach (var problem in exported.Problems)
@@ -569,6 +589,11 @@ static void WriteApply(ApplyResult applied, bool scriptOnly)
     foreach (var data in applied.Data)
     {
         Console.WriteLine(Invariant($"  {"Data",-7} {"Table",-24} {data.Table}  {data.Inserted} inserted, {data.Updated} updated, {data.Deleted} deleted row(s)"));
+    }
+
+    foreach (var skipped in applied.Skipped ?? [])
+    {
+        Console.WriteLine($"  Skipped: {skipped}");
     }
 
     foreach (var problem in applied.Problems)

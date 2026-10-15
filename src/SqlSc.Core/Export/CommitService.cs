@@ -1,3 +1,4 @@
+using SqlSc.Core.Comparison;
 using SqlSc.Core.WorkingFolders;
 
 namespace SqlSc.Core.Export;
@@ -8,7 +9,13 @@ public sealed record CommitResult(ExportResult Export, IReadOnlyList<string> Com
 /// <summary>Exports objects and commits exactly their files, leaving anything else staged or changed alone.</summary>
 public static class CommitService
 {
-    public static CommitResult Commit(WorkingFolder folder, string connectionString, ExportSelection selection, string message, bool fullExtract = false)
+    public static CommitResult Commit(
+        WorkingFolder folder,
+        string connectionString,
+        ExportSelection selection,
+        string message,
+        bool fullExtract = false,
+        BaselineStore? baseline = null)
     {
         if (string.IsNullOrWhiteSpace(message))
         {
@@ -20,7 +27,7 @@ public static class CommitService
             throw new InvalidDataException($"{folder.RootPath} isn't in a git repository.");
         }
 
-        var export = ExportService.Export(folder, connectionString, selection, fullExtract, writeIfProblems: false);
+        var export = ExportService.Export(folder, connectionString, selection, fullExtract, writeIfProblems: false, baseline: baseline);
         if (export.Problems.Count > 0 || export.Files.Count == 0)
         {
             return new CommitResult(export, [], null);
