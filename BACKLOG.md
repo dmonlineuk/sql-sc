@@ -1,3 +1,1 @@
-- In UI, need visibility of current / branch options so we can switch or checkout
-- Need an intelligent order-of-events when creating or dropping objects with interdependencies e.g. don't drop schema before table / don't create table before schema
-- Investigate: can't drop schemas even when all objects dropped
+- In UI, need visibility of branch options so we can switch and checkout
