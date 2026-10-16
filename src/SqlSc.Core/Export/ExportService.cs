@@ -10,7 +10,17 @@ namespace SqlSc.Core.Export;
 /// <summary>Which changed objects to export: those named, every changed object, or those last changed by the current login.</summary>
 /// <param name="Data">Include the rows of selected static data tables; without it only their schema is selected.</param>
 /// <param name="Force">Export objects even if that undoes a change made in the folder since it last matched the database.</param>
-public sealed record ExportSelection(IReadOnlyList<string> Names, bool All = false, bool Mine = false, bool Data = false, bool Force = false)
+/// <summary>
+/// The objects to export or apply. <see cref="DataNames"/>, when given, are the tables whose static data is included instead of
+/// <see cref="Names"/> or <see cref="All"/>, so a table's schema and rows can be picked separately.
+/// </summary>
+public sealed record ExportSelection(
+    IReadOnlyList<string> Names,
+    bool All = false,
+    bool Mine = false,
+    bool Data = false,
+    bool Force = false,
+    IReadOnlyList<string>? DataNames = null)
 {
     internal IReadOnlySet<string> NamedObjects => Names.Select(ExportService.FormatName).ToHashSet(StringComparer.OrdinalIgnoreCase);
 }
@@ -204,9 +214,9 @@ public static class ExportService
             return [];
         }
 
-        var candidates = selection.All
+        var candidates = selection.All && selection.DataNames is null
             ? report.Data.Where(d => d.HasChanges || d.Problem is not null).ToList()
-            : selection.Names.Select(FormatName)
+            : (selection.DataNames ?? selection.Names).Select(FormatName)
                 .SelectMany(name => report.Data.Where(d => string.Equals(d.Table, name, StringComparison.OrdinalIgnoreCase)))
                 .Distinct()
                 .ToList();

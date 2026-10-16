@@ -32,3 +32,5 @@ table.grid tbody tr { cursor: pointer; }
 .diff td.add { background: var(--add); }
 .diff tr.hunk td { background: #ddf4ff; color: var(--muted); }
 .diff th { text-align: left; font-weight: 500; padding: .3rem .4rem; border-bottom: 1px solid var(--border); }
+section.shared { border-color: #d4a72c; background: #fff8c5; }
+pre.script { margin: 0; max-height: 32rem; overflow: auto; padding: .5rem; background: #f6f8fa; border: 1px solid var(--border); border-radius: 4px; font: 12px/1.4 ui-monospace, Consolas, monospace; }

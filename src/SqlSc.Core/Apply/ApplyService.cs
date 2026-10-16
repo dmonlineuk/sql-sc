@@ -68,6 +68,10 @@ public static class ApplyService
     /// <param name="baseline">Where the baseline is kept; null to keep none.</param>
     /// <param name="confirm">Asks which changes to make; null to make them all.</param>
     /// <param name="log">Where a copy of each script that runs is saved; null to save none.</param>
+    /// <param name="dataNames">
+    /// The tables whose static data is applied, as if named, instead of those picked by <paramref name="names"/> or
+    /// <paramref name="all"/>; implies <paramref name="data"/>.
+    /// </param>
     public static ApplyResult Apply(
         WorkingFolder folder,
         string connectionString,
@@ -80,7 +84,8 @@ public static class ApplyService
         bool fullExtract = false,
         BaselineStore? baseline = null,
         ApplyConfirmation? confirm = null,
-        DeploymentLog? log = null)
+        DeploymentLog? log = null,
+        IReadOnlyList<string>? dataNames = null)
     {
         using var session = StatusService.Open(folder, connectionString, includeChangedBy: true, fullExtract, baselineStore: baseline);
         var report = session.Report;
@@ -102,14 +107,15 @@ public static class ApplyService
                 .Select(c => $"{c.Name} was last changed in the database by {c.LastChange!.LoginName} at {c.LastChange.StartTime:yyyy-MM-dd HH:mm}; pass --force to overwrite it."));
         }
 
-        var selectedData = ExportService.SelectData(report, new ExportSelection(names, all, Data: data), problems)
-            .Where(d => !all || d.Deleted + d.Modified > 0)
+        var dataAll = all && dataNames is null;
+        var selectedData = ExportService.SelectData(report, new ExportSelection(names, all, Data: data || dataNames is not null, DataNames: dataNames), problems)
+            .Where(d => !dataAll || d.Deleted + d.Modified > 0)
             .ToList();
         var tracked = StaticDataService.Tracked(folder);
         var dataTables = selectedData
-            .Select(d => (Table: tracked.First(t => string.Equals(t.File, d.File, StringComparison.OrdinalIgnoreCase)), DeleteRows: !all))
+            .Select(d => (Table: tracked.First(t => string.Equals(t.File, d.File, StringComparison.OrdinalIgnoreCase)), DeleteRows: !dataAll))
             .ToList();
-        IReadOnlyList<AppliedData> appliedData = selectedData.Select(d => new AppliedData(d.Table, d.File, d.Deleted, d.Modified, all ? 0 : d.New)).ToList();
+        IReadOnlyList<AppliedData> appliedData = selectedData.Select(d => new AppliedData(d.Table, d.File, d.Deleted, d.Modified, dataAll ? 0 : d.New)).ToList();
 
         var objects = selected
             .Select(c => new AppliedObject(

@@ -80,6 +80,35 @@ public class StaticDataTests(SqlServerFixture sql)
     }
 
     [Fact]
+    public void DataNamesPickATablesRowsSeparatelyFromItsSchema()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "ALTER TABLE [Sales].[Customer] ADD [Email] nvarchar(200) NULL");
+        sql.Execute(database, "SET IDENTITY_INSERT [Sales].[Customer] ON; INSERT INTO [Sales].[Customer] ([CustomerId], [Name], [IsActive]) VALUES (3, N'Northwind', 1);");
+        var folder = WorkingFolder.Open(SqlServerFixture.DemoFolder);
+
+        var exported = ExportService.Export(folder, sql.ConnectionString(database), new ExportSelection([], Data: true, DataNames: ["Sales.Customer"]), dryRun: true);
+
+        Assert.Empty(exported.Selected);
+        Assert.Equal(["[Sales].[Customer]"], exported.SelectedData.Select(d => d.Table));
+        Assert.All(exported.Files, f => Assert.StartsWith("Data", f.Path, StringComparison.Ordinal));
+
+        var rowsOnly = ApplyService.Apply(folder, sql.ConnectionString(database), [], dataNames: ["Sales.Customer"]);
+
+        Assert.True(rowsOnly.Applied, string.Join(Environment.NewLine, rowsOnly.Problems));
+        Assert.Empty(rowsOnly.Objects);
+        Assert.Equal([("[Sales].[Customer]", 2, 0, 1)], rowsOnly.Data.Select(d => (d.Table, d.Inserted, d.Updated, d.Deleted)));
+        Assert.Equal(1, Scalar(database, "SELECT COUNT(*) FROM sys.columns WHERE name = 'Email'"));
+
+        var schemaOnly = ApplyService.Apply(folder, sql.ConnectionString(database), ["Sales.Customer"], allowDataLoss: true, dataNames: []);
+
+        Assert.True(schemaOnly.Applied, string.Join(Environment.NewLine, schemaOnly.Problems));
+        Assert.Empty(schemaOnly.Data);
+        Assert.Equal(0, Scalar(database, "SELECT COUNT(*) FROM sys.columns WHERE name = 'Email'"));
+        Assert.Equal(2, Scalar(database, "SELECT COUNT(*) FROM [Sales].[Customer]"));
+    }
+
+    [Fact]
     public void LinkedTablesExportInKeyOrderAndRoundTripEveryType()
     {
         var database = CreateDatabase(LookupTable);
