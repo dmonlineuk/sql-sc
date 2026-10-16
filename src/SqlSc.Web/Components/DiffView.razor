@@ -38,5 +38,12 @@ else
 
     [Parameter] public string? Empty { get; set; }
 
-    protected override void OnParametersSet() => rows = SideBySideDiff.Parse(Unified);
+    /// <summary>Show the unified diff's new side on the left and its old side on the right.</summary>
+    [Parameter] public bool Reverse { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        var parsed = SideBySideDiff.Parse(Unified);
+        rows = Reverse ? [.. parsed.Select(r => r.Swapped())] : parsed;
+    }
 }

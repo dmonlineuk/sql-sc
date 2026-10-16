@@ -1,0 +1,380 @@
+@page "/get-latest"
+@inherits WorkPage
+
+<PageTitle>sql-sc - Get latest</PageTitle>
+
+@if (State.CurrentLink is not { } link)
+{
+    <section class="card"><p>Link a working folder to a database on <a href="">Setup</a> first.</p></section>
+}
+else
+{
+    <section class="card">
+        <div class="row" style="margin-top:0">
+            <button id="refresh" class="primary" @onclick="Refresh" disabled="@Busy">Refresh</button>
+            <GitBar Git="Git" Busy="Busy" OnGit="RunGit" />
+            @if (Busy)
+            {
+                <span class="muted">@BusyText</span>
+            }
+        </div>
+        @if (Notice is not null)
+        {
+            <p class="@(Failed ? "error" : "ok")">@Notice</p>
+        }
+    </section>
+
+    @if (link.Mode == DatabaseMode.Shared)
+    {
+        <section id="shared-warning" class="card shared">
+            <b>This is a shared database.</b> Applying changes it for everyone who uses it. Pull first so you deploy the latest folder,
+            and check the script before you apply it.
+        </section>
+    }
+
+    @if (result is { } r)
+    {
+        <div class="split">
+            <section class="card">
+                <h2>@rows.Count(x => x.Incoming) incoming changes to @r.Status.Database on @r.Status.Server</h2>
+                @if (rows.Count == 0)
+                {
+                    <p class="muted">The database and the folder match.</p>
+                }
+                else
+                {
+                    <table class="grid">
+                        <thead>
+                            <tr>
+                                <th><input type="checkbox" checked="@(rows.All(x => x.Selected))" @onchange="e => SelectAll(e.Value is true)" title="Select all" /></th>
+                                <th>Type</th><th>Object</th><th>Apply</th><th>Changed in</th><th>Changed by</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in rows)
+                            {
+                                <tr class="@(row == current ? "selected" : null)" @onclick="() => current = row">
+                                    <td @onclick:stopPropagation="true"><input type="checkbox" @bind="row.Selected" /></td>
+                                    <td>@row.Type</td>
+                                    <td>@row.Name</td>
+                                    <td class="@(row.Drops ? "warn" : null)">@row.Action</td>
+                                    <td class="@(row.Side is ChangeSide.Database or ChangeSide.Both ? "warn" : null)">@SideText(row.Side)</td>
+                                    <td>@row.ChangedBy</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+                @foreach (var problem in r.Problems)
+                {
+                    <p class="error">@problem</p>
+                }
+                @if (Selected.Any(x => x.Side == ChangeSide.Database))
+                {
+                    <p class="warn">Some selected objects changed in the database since they last matched the folder. Applying them undoes those changes.</p>
+                }
+                @if (Selected.Any(x => x.Side == ChangeSide.Both))
+                {
+                    <p class="warn">Some selected objects changed on both sides. Applying them replaces the database's version with the folder's.</p>
+                }
+                @if (Selected.Any(x => x.Drops))
+                {
+                    <p class="warn">Some selected objects are only in the database. Applying drops them.</p>
+                }
+                <label><input type="checkbox" id="force" @bind="force" /> Overwrite newer database changes, conflicts and other logins' changes (--force)</label>
+                <label><input type="checkbox" id="allow-data-loss" @bind="allowDataLoss" /> Allow changes that could lose data (--allow-data-loss)</label>
+                <div class="row">
+                    <button id="preview" @onclick="Preview" disabled="@(Busy || !Selected.Any())">Preview script</button>
+                    <span class="muted">@Selected.Count() selected</span>
+                </div>
+            </section>
+            <section class="card">
+                @if (current is null)
+                {
+                    <p class="muted">Select a change to see its script.</p>
+                }
+                else
+                {
+                    <h2>@current.Name</h2>
+                    @if (current.Detail is { } detail)
+                    {
+                        <p class="muted">@detail</p>
+                    }
+                    @foreach (var file in FilesFor(current))
+                    {
+                        <p><b>@file.Path</b> <span class="muted">@(file.Action == FileAction.Deleted ? "is only in the folder" : current.Drops ? "isn't in the folder" : null)</span></p>
+                        <DiffView Unified="@file.Diff" Reverse="true" LeftTitle="Database (now)" RightTitle="Folder (incoming)" Empty="Only line endings differ." />
+                    }
+                }
+            </section>
+        </div>
+    }
+
+    @if (preview is { } p)
+    {
+        <section id="deployment" class="card">
+            <h2>Deployment script</h2>
+            @if (!PreviewCurrent)
+            {
+                <p class="warn">The selection or options changed since this preview. Preview again before you apply.</p>
+            }
+            @foreach (var problem in p.Problems)
+            {
+                <p class="error">@problem</p>
+            }
+            @foreach (var skipped in p.Skipped ?? [])
+            {
+                <p class="warn">@skipped</p>
+            }
+            @if (p.Objects.Count + p.Data.Count == 0)
+            {
+                <p class="muted">Nothing to apply.</p>
+            }
+            else
+            {
+                <ul>
+                    @foreach (var o in p.Objects)
+                    {
+                        <li>@o.Action @o.ObjectType @o.Name</li>
+                    }
+                    @foreach (var d in p.Data)
+                    {
+                        <li>Static data @d.Table: @d.Inserted to insert, @d.Updated to update, @d.Deleted to delete</li>
+                    }
+                </ul>
+            }
+            @if (p.Script is { } script)
+            {
+                <pre id="schema-script" class="script">@script</pre>
+            }
+            @if (p.DataScript is { } dataScript)
+            {
+                <h2 style="margin-top:.8rem">Static data script</h2>
+                <pre id="data-script" class="script">@dataScript</pre>
+            }
+            <p class="muted">Everything runs in one transaction; any error rolls it all back. Changes that could lose data stop the deployment unless you allow them.</p>
+            @if (link.Mode == DatabaseMode.Shared)
+            {
+                <label><input type="checkbox" id="confirm-shared" @bind="confirmShared" /> I've checked this script. Apply it to the shared database @(result?.Status.Database) for everyone.</label>
+            }
+            <div class="row">
+                <button id="apply" class="primary" @onclick="ApplySelected" disabled="@(!CanApply)">Apply</button>
+            </div>
+        </section>
+    }
+}
+
+@code {
+    private ExportResult? result;
+    private List<ChangeRow> rows = [];
+    private ChangeRow? current;
+    private ApplyResult? preview;
+    private string? previewKey;
+    private bool force;
+    private bool allowDataLoss;
+    private bool confirmShared;
+
+    private IEnumerable<ChangeRow> Selected => rows.Where(x => x.Selected);
+
+    private bool PreviewCurrent => preview is not null && previewKey == SelectionKey();
+
+    private bool CanApply =>
+        !Busy
+        && PreviewCurrent
+        && preview!.Problems.Count == 0
+        && preview.Objects.Count + preview.Data.Count > 0
+        && (State.CurrentLink?.Mode != DatabaseMode.Shared || confirmShared);
+
+    protected override async Task Refresh()
+    {
+        if (!Connect(out var link, out var folder, out var connection))
+        {
+            return;
+        }
+
+        await Run("Comparing the folder with the database...", () =>
+        {
+            UpdateGit(link.Folder);
+            result = ExportService.Export(
+                folder,
+                connection,
+                new ExportSelection([], All: true, Data: true, Force: true),
+                dryRun: true,
+                baseline: BaselineStore.Default,
+                includeChangedBy: true);
+            rows = [
+                .. result.Status.Changes.Select(ChangeRow.For),
+                .. result.Status.Data.Where(d => d.HasChanges).Select(ChangeRow.For),
+            ];
+            current = rows.FirstOrDefault();
+            (preview, previewKey, confirmShared) = (null, null, false);
+            return null;
+        });
+    }
+
+    private async Task Preview()
+    {
+        if (!Connect(out _, out var folder, out var connection))
+        {
+            return;
+        }
+
+        var (names, dataNames) = Names();
+        var key = SelectionKey();
+        await Run("Scripting the deployment...", () =>
+        {
+            (preview, previewKey, confirmShared) = (Deploy(folder, connection, names, dataNames, scriptOnly: true, confirm: null), key, false);
+            return null;
+        });
+    }
+
+    private async Task ApplySelected()
+    {
+        if (!CanApply || !Connect(out _, out var folder, out var connection))
+        {
+            return;
+        }
+
+        var (names, dataNames) = Names();
+        var planned = PlanKey(preview!.Objects, preview.Data);
+        var differs = false;
+        await Run("Applying...", () =>
+        {
+            var applied = Deploy(folder, connection, names, dataNames, scriptOnly: false, confirm: (_, objects, data) =>
+            {
+                differs = PlanKey(objects, data) != planned;
+                return differs ? new ApplyChoice([], []) : new ApplyChoice(objects, data);
+            });
+            if (differs)
+            {
+                throw new InvalidDataException("The database or folder changed since the preview, so nothing was applied. Preview again.");
+            }
+
+            if (!applied.Applied)
+            {
+                throw new InvalidDataException(applied.Problems.Count > 0 ? string.Join('\n', applied.Problems) : "Nothing was applied.");
+            }
+
+            return ApplySummary(applied);
+        });
+        await RefreshAfter();
+    }
+
+    private ApplyResult Deploy(WorkingFolder folder, string connection, IReadOnlyList<string> names, IReadOnlyList<string> dataNames, bool scriptOnly, ApplyConfirmation? confirm) =>
+        ApplyService.Apply(
+            folder,
+            connection,
+            names,
+            scriptOnly: scriptOnly,
+            allowDataLoss: allowDataLoss,
+            force: force,
+            baseline: BaselineStore.Default,
+            confirm: confirm,
+            log: DeploymentLog.Default,
+            dataNames: dataNames);
+
+    private (List<string> Names, List<string> DataNames) Names() =>
+        ([.. Selected.Where(x => !x.IsData).Select(x => x.Name)], [.. Selected.Where(x => x.IsData).Select(x => x.Name)]);
+
+    private string SelectionKey() =>
+        string.Join('\n', Selected.Select(x => $"{x.IsData}:{x.Name}").Append($"force={force}").Append($"loss={allowDataLoss}"));
+
+    private void SelectAll(bool selected) => rows.ForEach(x => x.Selected = selected);
+
+    private IEnumerable<ExportedFile> FilesFor(ChangeRow row) =>
+        result?.Files.Where(f => row.IsData
+            ? string.Equals(f.Path, row.File, StringComparison.OrdinalIgnoreCase)
+            : f.Objects.Contains(row.Name, StringComparer.OrdinalIgnoreCase)) ?? [];
+
+    internal static string PlanKey(IReadOnlyList<AppliedObject> objects, IReadOnlyList<AppliedData> data) =>
+        string.Join('\n', objects.Select(o => $"{o.Action} {o.Name}")
+            .Concat(data.Select(d => string.Create(CultureInfo.InvariantCulture, $"{d.Table} {d.Inserted} {d.Updated} {d.Deleted}")))
+            .Order(StringComparer.Ordinal));
+
+    internal static string ApplySummary(ApplyResult applied)
+    {
+        var lines = new List<string>
+        {
+            string.Create(CultureInfo.InvariantCulture, $"Applied {applied.Objects.Count} object change(s) and static data for {applied.Data.Count} table(s)."),
+        };
+        lines.AddRange(applied.Messages);
+        if (applied.Declined is { Count: > 0 } declined)
+        {
+            lines.Add($"Not applied: {string.Join(", ", declined)}");
+        }
+
+        if (applied.SavedScript is { } saved)
+        {
+            lines.Add($"Script saved to {saved}");
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static string SideText(ChangeSide side) => side switch
+    {
+        ChangeSide.Both => "Conflict",
+        ChangeSide.Unknown => "",
+        _ => side.ToString(),
+    };
+
+    private sealed class ChangeRow
+    {
+        public required string Type { get; init; }
+
+        public required string Name { get; init; }
+
+        public required string Action { get; init; }
+
+        public ChangeSide Side { get; init; }
+
+        public string? ChangedBy { get; init; }
+
+        public string? Detail { get; init; }
+
+        public string? File { get; init; }
+
+        public bool IsData { get; init; }
+
+        public bool Drops { get; init; }
+
+        public bool Selected { get; set; }
+
+        /// <summary>Whether this is a folder change that <c>apply --all</c> would pick.</summary>
+        public bool Incoming { get; init; }
+
+        public static ChangeRow For(ObjectChange change)
+        {
+            var incoming = change.Status != ObjectStatus.New && change.Side is not (ChangeSide.Database or ChangeSide.Both);
+            return new()
+            {
+                Type = change.ObjectType,
+                Name = change.Name,
+                Action = change.Status switch
+                {
+                    ObjectStatus.New => "Drop",
+                    ObjectStatus.Deleted => "Create",
+                    _ => "Alter",
+                },
+                Side = change.Side,
+                ChangedBy = change.LastChange is { } last
+                    ? $"{last.LoginName} {last.StartTime.ToString("g", CultureInfo.CurrentCulture)}"
+                    : null,
+                Detail = change.Children.Count == 0 ? null : string.Join(", ", change.Children.Select(c => $"{c.Status} {c.ObjectType} {c.Name}")),
+                Drops = change.Status == ObjectStatus.New,
+                Incoming = incoming,
+                Selected = incoming,
+            };
+        }
+
+        public static ChangeRow For(DataChange data) => new()
+        {
+            Type = "Static data",
+            Name = data.Table,
+            Action = string.Create(CultureInfo.InvariantCulture, $"{data.Deleted} insert, {data.Modified} update, {data.New} delete rows"),
+            File = data.File,
+            IsData = true,
+            Incoming = true,
+        };
+    }
+}

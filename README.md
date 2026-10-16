@@ -25,7 +25,8 @@ A free, MIT-licensed replacement for the core of Redgate SQL Source Control. It 
 
 Or run `sql-sc ui [path/to/working-folder]` for the local web UI. It opens your browser on a page where you can link a
 folder and test the connection (Setup), and see each change with a side-by-side diff, then commit the ones you tick and
-optionally push (Commit). It listens on `127.0.0.1` only, and the address it prints includes a one-off token, so other
+optionally push (Commit), and pull, preview the deployment script for the changes you tick and apply it (Get latest). On
+a shared database, Get latest warns that applying changes it for everyone and asks you to confirm. It listens on `127.0.0.1` only, and the address it prints includes a one-off token, so other
 users and websites can't use it. Press Ctrl+C to stop it.
 
 Add `--data` to `export`, `commit` and `apply` to include static data (see `sql-sc data link`). `sql-sc <command> --help`
@@ -184,6 +185,6 @@ An optional `sql-sc.json` in the working folder holds settings shared by the tea
 | `src/SqlSc.Cli` | `sql-sc` command-line tool |
 | `src/SqlSc.Web` | Local Blazor web UI started by `sql-sc ui` |
 | `tests/SqlSc.Core.Tests` | Unit tests |
-| `tests/SqlSc.Web.Tests` | Web UI unit tests (local access checks, diff view) |
+| `tests/SqlSc.Web.Tests` | Web UI unit tests (local access checks, diff view, Get latest plan check) |
 | `tests/SqlSc.IntegrationTests` | Tests against SQL Server 2022 in Docker |
 | `tests/Fixtures/Demo` | Small Redgate-layout working folder used by the tests |

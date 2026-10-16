@@ -1,0 +1,15 @@
+@if (Git is { } g)
+{
+    <span>Branch <b>@(g.Branch ?? "(detached)")</b>@(g.Upstream is null ? " (no upstream)" : $" -> {g.Upstream}: {g.Ahead} ahead, {g.Behind} behind")</span>
+    <button id="git-fetch" @onclick="() => OnGit.InvokeAsync(GitOperation.Fetch)" disabled="@Busy">Fetch</button>
+    <button id="git-pull" @onclick="() => OnGit.InvokeAsync(GitOperation.Pull)" disabled="@Busy" title="git pull --ff-only">Pull</button>
+    <button id="git-push" @onclick="() => OnGit.InvokeAsync(GitOperation.Push)" disabled="@Busy">Push</button>
+}
+
+@code {
+    [Parameter] public GitState? Git { get; set; }
+
+    [Parameter] public bool Busy { get; set; }
+
+    [Parameter] public EventCallback<GitOperation> OnGit { get; set; }
+}
