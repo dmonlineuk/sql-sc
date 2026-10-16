@@ -117,6 +117,51 @@ public class ApplyTests(SqlServerFixture sql)
     }
 
     [Fact]
+    public void NamingADatabaseOnlySchemaDropsIt()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "CREATE SCHEMA [Archive]");
+
+        var applied = ApplyService.Apply(Demo, sql.ConnectionString(database), ["Archive"]);
+
+        Assert.True(applied.Applied, string.Join(Environment.NewLine, applied.Problems));
+        Assert.Equal([(ApplyAction.Drop, "[Archive]")], applied.Objects.Select(o => (o.Action, o.Name)));
+        Assert.Equal(0, Scalar(database, "SELECT COUNT(*) FROM sys.schemas WHERE name = 'Archive'"));
+    }
+
+    [Fact]
+    public void ASchemaAndItsObjectsCanBeDroppedTogether()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "CREATE SCHEMA [Archive]");
+        sql.Execute(database, "CREATE TABLE [Archive].[Order] ([OrderId] int NOT NULL CONSTRAINT [PK_ArchiveOrder] PRIMARY KEY)");
+        sql.Execute(database, "CREATE VIEW [Archive].[OrderIds] AS SELECT [OrderId] FROM [Archive].[Order]");
+
+        var applied = ApplyService.Apply(Demo, sql.ConnectionString(database), ["Archive", "Archive.Order", "Archive.OrderIds"]);
+
+        Assert.True(applied.Applied, string.Join(Environment.NewLine, applied.Problems));
+        Assert.Equal(
+            ["[Archive]", "[Archive].[Order]", "[Archive].[OrderIds]"],
+            applied.Objects.Select(o => o.Name).Order());
+        Assert.Equal(0, Scalar(database, "SELECT COUNT(*) FROM sys.schemas WHERE name = 'Archive'"));
+        Assert.Empty(StatusService.GetStatus(Demo, sql.ConnectionString(database), includeChangedBy: false).Changes);
+    }
+
+    [Fact]
+    public void ASchemaThatStillHasObjectsIsNotDroppedOnItsOwn()
+    {
+        var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);
+        sql.Execute(database, "CREATE SCHEMA [Archive]");
+        sql.Execute(database, "CREATE TABLE [Archive].[Order] ([OrderId] int NOT NULL CONSTRAINT [PK_ArchiveOrder] PRIMARY KEY)");
+
+        var applied = ApplyService.Apply(Demo, sql.ConnectionString(database), ["Archive"]);
+
+        Assert.False(applied.Applied);
+        Assert.Contains(applied.Problems, p => p.Contains("[Archive].[Order]", StringComparison.Ordinal));
+        Assert.Equal(1, Scalar(database, "SELECT COUNT(*) FROM sys.schemas WHERE name = 'Archive'"));
+    }
+
+    [Fact]
     public void ChangesThatLoseDataAreBlockedUnlessAllowed()
     {
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);

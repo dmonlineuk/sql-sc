@@ -95,7 +95,7 @@ public static class DatabaseReferences
                 .Select(m => m.Message)
                 .ToList();
             var removed = BrokenObjects
-                .Remove(folderModel, IsBorrowed, o => unresolved.Any(m => m.Contains($"{o.Name}:", StringComparison.Ordinal)))
+                .Remove(folderModel, IsBorrowed, o => o.Name.Parts.Count >= 2 && unresolved.Any(m => m.Contains($"{o.Name}:", StringComparison.Ordinal)))
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
             objects.RemoveAll(o => removed.Contains(StatusService.FormatName(o.Name)!));
         }

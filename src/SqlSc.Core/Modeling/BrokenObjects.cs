@@ -20,7 +20,7 @@ public static class BrokenObjects
         {
             var owner = StatusService.OwnerOf(obj);
             return !filter.Includes(owner.ObjectType.Name, owner.Name.Parts);
-        }, IsBroken);
+        }, obj => obj.Name.Parts.Count >= 2 && IsBroken(obj));
     }
 
     /// <summary>
@@ -31,7 +31,7 @@ public static class BrokenObjects
     {
         var objects = model.GetObjects(DacQueryScopes.UserDefined).Where(o => o.Name.HasName).ToList();
         var remove = new Dictionary<string, TSqlObject>(StringComparer.OrdinalIgnoreCase);
-        foreach (var root in objects.Where(o => o.Name.Parts.Count >= 2 && removable(o) && broken(o)))
+        foreach (var root in objects.Where(o => removable(o) && broken(o)))
         {
             var closure = Dependents(root);
             if (closure.Values.All(removable))
