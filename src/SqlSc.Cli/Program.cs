@@ -509,7 +509,7 @@ apply.SetAction(result =>
 var uiFolderArgument = new Argument<DirectoryInfo?>("folder") { Description = "Working folder to open first.", Arity = ArgumentArity.ZeroOrOne };
 var portOption = new Option<int>("--port") { Description = "Local port to listen on. Defaults to a free port." };
 var noBrowserOption = new Option<bool>("--no-browser") { Description = "Print the address instead of opening a browser." };
-var ui = new Command("ui", "Open the local web UI (Setup, Commit). It listens on 127.0.0.1 only; press Ctrl+C to stop it.")
+var ui = new Command("ui", "Open the local web UI (Setup, Commit, Get latest). It listens on 127.0.0.1 only; press Ctrl+C to stop it.")
 {
     uiFolderArgument,
     portOption,

@@ -6,6 +6,8 @@ namespace SqlSc.Web.Services;
 public sealed record DiffRow(int? LeftNumber, string? Left, int? RightNumber, string? Right, bool IsHunk = false)
 {
     public bool Changed => !IsHunk && Left != Right;
+
+    public DiffRow Swapped() => this with { LeftNumber = RightNumber, Left = Right, RightNumber = LeftNumber, Right = Left };
 }
 
 /// <summary>Turns a unified diff (as <c>UnifiedDiff.Create</c> writes it) into rows with the old text on the left and the new on the right.</summary>
