@@ -1,0 +1,42 @@
+@if (rows.Count == 0)
+{
+    <p class="muted">@(Empty ?? "No script differences.")</p>
+}
+else
+{
+    <table class="diff">
+        <thead><tr><th colspan="2">@LeftTitle</th><th colspan="2">@RightTitle</th></tr></thead>
+        <tbody>
+            @foreach (var row in rows)
+            {
+                if (row.IsHunk)
+                {
+                    <tr class="hunk"><td colspan="4">@row.Left</td></tr>
+                }
+                else
+                {
+                    <tr>
+                        <td class="num">@row.LeftNumber</td>
+                        <td class="@(row.Changed && row.Left is not null ? "del" : null)">@row.Left</td>
+                        <td class="num">@row.RightNumber</td>
+                        <td class="@(row.Changed && row.Right is not null ? "add" : null)">@row.Right</td>
+                    </tr>
+                }
+            }
+        </tbody>
+    </table>
+}
+
+@code {
+    private IReadOnlyList<DiffRow> rows = [];
+
+    [Parameter] public string? Unified { get; set; }
+
+    [Parameter] public string LeftTitle { get; set; } = "Folder";
+
+    [Parameter] public string RightTitle { get; set; } = "Database";
+
+    [Parameter] public string? Empty { get; set; }
+
+    protected override void OnParametersSet() => rows = SideBySideDiff.Parse(Unified);
+}

@@ -1,0 +1,320 @@
+@page "/commit"
+@inject UiState State
+
+<PageTitle>sql-sc - Commit</PageTitle>
+
+@if (State.CurrentLink is not { } link)
+{
+    <section class="card"><p>Link a working folder to a database on <a href="">Setup</a> first.</p></section>
+}
+else
+{
+    <section class="card">
+        <div class="row" style="margin-top:0">
+            <button id="refresh" class="primary" @onclick="Refresh" disabled="@busy">Refresh</button>
+            @if (git is { } g)
+            {
+                <span>Branch <b>@(g.Branch ?? "(detached)")</b>@(g.Upstream is null ? " (no upstream)" : $" -> {g.Upstream}: {g.Ahead} ahead, {g.Behind} behind")</span>
+                <button id="git-fetch" @onclick="() => RunGit(GitSync.Fetch, false)" disabled="@busy">Fetch</button>
+                <button id="git-pull" @onclick="() => RunGit(GitSync.Pull, true)" disabled="@busy" title="git pull --ff-only">Pull</button>
+                <button id="git-push" @onclick="() => RunGit(GitSync.Push, false)" disabled="@busy">Push</button>
+            }
+            @if (busy)
+            {
+                <span class="muted">@busyText</span>
+            }
+        </div>
+        @if (notice is not null)
+        {
+            <p class="@(failed ? "error" : "ok")">@notice</p>
+        }
+    </section>
+
+    @if (result is { } r)
+    {
+        <div class="split">
+            <section class="card">
+                <h2>@(r.Status.Changes.Count + DataRows.Count) changes in @r.Status.Database on @r.Status.Server</h2>
+                @if (rows.Count == 0)
+                {
+                    <p class="muted">The database and the folder match.</p>
+                }
+                else
+                {
+                    <table class="grid">
+                        <thead>
+                            <tr>
+                                <th><input type="checkbox" checked="@(rows.All(x => x.Selected))" @onchange="e => SelectAll(e.Value is true)" title="Select all" /></th>
+                                <th>Type</th><th>Object</th><th>Change</th><th>Changed in</th><th>Changed by</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var row in rows)
+                            {
+                                <tr class="@(row == current ? "selected" : null)" @onclick="() => current = row">
+                                    <td @onclick:stopPropagation="true"><input type="checkbox" @bind="row.Selected" /></td>
+                                    <td>@row.Type</td>
+                                    <td>@row.Name</td>
+                                    <td>@row.Change</td>
+                                    <td class="@(row.Side is ChangeSide.Folder or ChangeSide.Both ? "warn" : null)">@SideText(row.Side)</td>
+                                    <td>@row.ChangedBy</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                }
+                @foreach (var problem in r.Problems)
+                {
+                    <p class="error">@problem</p>
+                }
+                @if (rows.Any(x => x.Selected && x.Side is ChangeSide.Folder or ChangeSide.Both))
+                {
+                    <p class="warn">Some selected objects changed in the folder since they last matched the database. Committing them replaces the folder's version with the database's.</p>
+                }
+                <label for="message">Commit message</label>
+                <textarea id="message" @bind="message" @bind:event="oninput"></textarea>
+                <div class="row">
+                    <button id="commit" class="primary" @onclick="() => CommitSelected(false)" disabled="@(!CanCommit)">Commit</button>
+                    <button id="commit-push" @onclick="() => CommitSelected(true)" disabled="@(!CanCommit)">Commit &amp; Push</button>
+                    <span class="muted">@rows.Count(x => x.Selected) selected</span>
+                </div>
+            </section>
+            <section class="card">
+                @if (current is null)
+                {
+                    <p class="muted">Select a change to see its script.</p>
+                }
+                else
+                {
+                    <h2>@current.Name</h2>
+                    @if (current.Detail is { } detail)
+                    {
+                        <p class="muted">@detail</p>
+                    }
+                    @foreach (var file in FilesFor(current))
+                    {
+                        <p><b>@file.Path</b> <span class="muted">@(file.Action == FileAction.Deleted ? "would be deleted" : "would be written")</span></p>
+                        <DiffView Unified="@file.Diff" Empty="Only line endings differ." />
+                    }
+                }
+            </section>
+        </div>
+    }
+}
+
+@code {
+    private ExportResult? result;
+    private GitState? git;
+    private List<ChangeRow> rows = [];
+    private ChangeRow? current;
+    private string? message;
+    private bool busy;
+    private string? busyText;
+    private string? notice;
+    private bool failed;
+
+    private List<DataChange> DataRows => result?.Status.Data.Where(d => d.HasChanges).ToList() ?? [];
+
+    private bool CanCommit => !busy && !string.IsNullOrWhiteSpace(message) && rows.Any(x => x.Selected) && git is not null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        if (State.CurrentLink is not null)
+        {
+            await Refresh();
+        }
+    }
+
+    private async Task Refresh()
+    {
+        if (!Connect(out var link, out var folder, out var connection))
+        {
+            return;
+        }
+
+        await Run("Comparing the database with the folder...", () =>
+        {
+            git = GitSync.IsRepository(link.Folder) ? GitSync.State(link.Folder) : null;
+            result = ExportService.Export(
+                folder,
+                connection,
+                new ExportSelection([], All: true, Data: true, Force: true),
+                dryRun: true,
+                baseline: BaselineStore.Default,
+                includeChangedBy: true);
+            rows = [.. result.Status.Changes.Select(ChangeRow.For), .. DataRows.Select(ChangeRow.For)];
+            current = rows.FirstOrDefault();
+            return git is null ? $"{link.Folder} isn't in a git repository; Commit is unavailable." : null;
+        });
+    }
+
+    private async Task CommitSelected(bool push)
+    {
+        if (!Connect(out var link, out var folder, out var connection))
+        {
+            return;
+        }
+
+        var selected = rows.Where(x => x.Selected).ToList();
+        var selection = new ExportSelection(
+            [.. selected.Select(x => x.Name).Distinct(StringComparer.OrdinalIgnoreCase)],
+            Data: selected.Any(x => x.IsData),
+            Force: selected.Any(x => x.Side is ChangeSide.Folder or ChangeSide.Both));
+        var text = message!;
+        await Run(push ? "Committing and pushing..." : "Committing...", () =>
+        {
+            var committed = CommitService.Commit(folder, connection, selection, text, baseline: BaselineStore.Default);
+            if (committed.Commit is null)
+            {
+                throw new InvalidDataException(committed.Export.Problems.Count > 0
+                    ? string.Join('\n', committed.Export.Problems)
+                    : "Nothing was committed.");
+            }
+
+            var pushed = push ? GitSync.Push(link.Folder) : null;
+            return $"Committed {committed.CommittedFiles.Count} file(s) as {committed.Commit[..Math.Min(8, committed.Commit.Length)]}.{(push ? " Pushed." : "")}{(string.IsNullOrEmpty(pushed) ? "" : $"\n{pushed}")}";
+        });
+        if (!failed)
+        {
+            message = null;
+        }
+
+        await RefreshAfter();
+    }
+
+    private async Task RunGit(Func<string, string> operation, bool refresh)
+    {
+        if (State.CurrentLink is not { } link)
+        {
+            return;
+        }
+
+        await Run("Running git...", () =>
+        {
+            var output = operation(link.Folder);
+            git = GitSync.State(link.Folder);
+            return string.IsNullOrWhiteSpace(output) ? "Done." : output;
+        });
+        if (refresh)
+        {
+            await RefreshAfter();
+        }
+    }
+
+    private async Task RefreshAfter()
+    {
+        if (failed)
+        {
+            return;
+        }
+
+        var text = notice;
+        await Refresh();
+        if (!failed)
+        {
+            notice = text;
+        }
+    }
+
+    private bool Connect(out Link link, out WorkingFolder folder, out string connection)
+    {
+        (link, folder, connection) = (State.CurrentLink!, null!, null!);
+        if (State.CurrentLink is null)
+        {
+            return false;
+        }
+
+        connection = State.ConnectionFor(link)!;
+        if (ConnectionStrings.NeedsPassword(connection))
+        {
+            (notice, failed) = ("This link needs a SQL password. Enter it on Setup.", true);
+            return false;
+        }
+
+        try
+        {
+            folder = WorkingFolder.Open(link.Folder);
+            return true;
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            (notice, failed) = (e.Message, true);
+            return false;
+        }
+    }
+
+    private async Task Run(string text, Func<string?> work)
+    {
+        (busy, busyText, notice, failed) = (true, text, null, false);
+        try
+        {
+            notice = await State.RunAsync(work);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            (notice, failed) = (e.Message, true);
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private void SelectAll(bool selected) => rows.ForEach(x => x.Selected = selected);
+
+    private IEnumerable<ExportedFile> FilesFor(ChangeRow row) =>
+        result?.Files.Where(f => row.IsData
+            ? string.Equals(f.Path, row.File, StringComparison.OrdinalIgnoreCase)
+            : f.Objects.Contains(row.Name, StringComparer.OrdinalIgnoreCase)) ?? [];
+
+    private static string SideText(ChangeSide side) => side switch
+    {
+        ChangeSide.Both => "Conflict",
+        ChangeSide.Unknown => "",
+        _ => side.ToString(),
+    };
+
+    private sealed class ChangeRow
+    {
+        public required string Type { get; init; }
+
+        public required string Name { get; init; }
+
+        public required string Change { get; init; }
+
+        public ChangeSide Side { get; init; }
+
+        public string? ChangedBy { get; init; }
+
+        public string? Detail { get; init; }
+
+        public string? File { get; init; }
+
+        public bool IsData { get; init; }
+
+        public bool Selected { get; set; }
+
+        public static ChangeRow For(ObjectChange change) => new()
+        {
+            Type = change.ObjectType,
+            Name = change.Name,
+            Change = change.Status.ToString(),
+            Side = change.Side,
+            ChangedBy = change.LastChange is { } last
+                ? $"{last.LoginName} {last.StartTime.ToString("g", CultureInfo.CurrentCulture)}"
+                : null,
+            Detail = change.Children.Count == 0 ? null : string.Join(", ", change.Children.Select(c => $"{c.Status} {c.ObjectType} {c.Name}")),
+            Selected = change.Side is not (ChangeSide.Folder or ChangeSide.Both),
+        };
+
+        public static ChangeRow For(DataChange data) => new()
+        {
+            Type = "Static data",
+            Name = data.Table,
+            Change = string.Create(CultureInfo.InvariantCulture, $"{data.New} new, {data.Modified} modified, {data.Deleted} deleted rows"),
+            File = data.File,
+            IsData = true,
+            Selected = true,
+        };
+    }
+}

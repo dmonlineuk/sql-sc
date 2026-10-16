@@ -1,10 +1,11 @@
-<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <AssemblyName>sql-sc</AssemblyName>
     <RootNamespace>SqlSc.Cli</RootNamespace>
     <PackAsTool>true</PackAsTool>
+    <IsPackable>true</IsPackable>
     <ToolCommandName>sql-sc</ToolCommandName>
     <Version>0.1.0</Version>
     <PackageId>sql-sc</PackageId>
@@ -15,6 +16,8 @@
     <PackageProjectUrl>https://github.com/dmonlineuk/sql-sc</PackageProjectUrl>
     <RepositoryUrl>https://github.com/dmonlineuk/sql-sc</RepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RequiresAspNetWebAssets>true</RequiresAspNetWebAssets>
+    <IsTransformWebConfigDisabled>true</IsTransformWebConfigDisabled>
   </PropertyGroup>
 
   <ItemGroup>
@@ -23,11 +26,26 @@
 
   <ItemGroup>
     <ProjectReference Include="..\SqlSc.Core\SqlSc.Core.csproj" />
+    <ProjectReference Include="..\SqlSc.Web\SqlSc.Web.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <None Include="..\..\THIRD-PARTY-NOTICES.md" Link="THIRD-PARTY-NOTICES.md" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="true" Pack="true" PackagePath="/" />
     <None Include="..\..\README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
+
+  <!--
+    Static web assets (the UI's CSS and blazor.web.js) are copied to the publish folder after the single-file bundle is built,
+    so they'd be missing from a lone sql-sc.exe. Add them, and their endpoints manifest, to the bundle instead.
+  -->
+  <Target Name="BundleStaticWebAssets"
+          BeforeTargets="_ComputeFilesToBundle"
+          DependsOnTargets="CopyStaticWebAssetsToPublishDirectory;_SplitPublishStaticWebAssetsByCopyOptions;GenerateStaticWebAssetsPublishManifest"
+          Condition="'$(PublishSingleFile)' == 'true'">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="@(_PublishStaticWebAssetsTargetPath)" RelativePath="%(_PublishStaticWebAssetsTargetPath.TargetPath)" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="false" />
+      <ResolvedFileToPublish Include="$(StaticWebAssetEndpointsPublishManifestPath)" RelativePath="$(TargetName).staticwebassets.endpoints.json" CopyToPublishDirectory="PreserveNewest" ExcludeFromSingleFile="false" />
+    </ItemGroup>
+  </Target>
 
 </Project>

@@ -21,6 +21,7 @@ jobs:
       - run: dotnet build --no-restore
       - run: dotnet format --verify-no-changes --no-restore
       - run: dotnet test tests/SqlSc.Core.Tests --no-build
+      - run: dotnet test tests/SqlSc.Web.Tests --no-build
       # Integration tests need Linux containers (SQL Server 2022 via Testcontainers).
       - if: runner.os == 'Linux'
         run: dotnet test tests/SqlSc.IntegrationTests --no-build
