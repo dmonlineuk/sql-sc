@@ -1,0 +1,211 @@
+@page "/static-data"
+@inherits WorkPage
+
+<PageTitle>sql-sc - Static data</PageTitle>
+
+@if (State.CurrentLink is null)
+{
+    <section class="card"><p>Link a working folder to a database on <a href="">Setup</a> first.</p></section>
+}
+else
+{
+    <section class="card">
+        <div class="row" style="margin-top:0">
+            <button id="refresh" class="primary" @onclick="Refresh" disabled="@Busy">Refresh</button>
+            @if (Busy)
+            {
+                <span class="muted">@BusyText</span>
+            }
+        </div>
+        <p class="muted">Tracked tables keep their rows in the folder. Commit row changes on <a href="commit">Commit</a> and apply incoming rows on <a href="get-latest">Get latest</a>.</p>
+        @if (Notice is not null)
+        {
+            <p class="@(Failed ? "error" : "ok")">@Notice</p>
+        }
+    </section>
+
+    @if (loaded)
+    {
+        <div class="split">
+            <section class="card">
+                <h2>@tracked.Count tracked of @tables.Count tables</h2>
+                <input id="search" class="search" type="text" @bind="search" @bind:event="oninput" placeholder="Find a table" />
+                <div class="table-scroll">
+                    <table class="grid">
+                        <thead><tr><th>Table</th><th>Rows</th><th>Differences</th><th></th></tr></thead>
+                        <tbody>
+                            @foreach (var row in Rows(tables, tracked, changes, search))
+                            {
+                                <tr class="@(row.Table == current ? "selected" : null)" @onclick="() => current = row.Table">
+                                    <td>@row.Table</td>
+                                    <td>@(row.Rows?.ToString("N0", CultureInfo.CurrentCulture))</td>
+                                    <td class="@(row.Change is { HasChanges: true } or { Problem: not null } ? "warn" : null)">@Summary(row)</td>
+                                    <td @onclick:stopPropagation="true">
+                                        @if (row.Tracked is not null)
+                                        {
+                                            @if (confirmUnlink == row.Table)
+                                            {
+                                                <button class="primary" @onclick="() => Unlink(row.Table)" disabled="@Busy">Unlink and delete its file</button>
+                                                <button @onclick="() => confirmUnlink = null">Cancel</button>
+                                            }
+                                            else
+                                            {
+                                                <button @onclick="() => confirmUnlink = row.Table" disabled="@Busy">Unlink</button>
+                                            }
+                                        }
+                                        else if (row.HasPrimaryKey)
+                                        {
+                                            <button @onclick="() => Link(row.Table)" disabled="@Busy"
+                                                    title="@(row.Rows > StaticDataService.LargeTableRows ? "Large table: every row goes into one script" : null)">Link</button>
+                                        }
+                                        else
+                                        {
+                                            <span class="muted">No primary key</span>
+                                        }
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+            <section class="card">
+                @if (CurrentChange is not { } change)
+                {
+                    <p class="muted">@(current is null ? "Select a table." : $"{current} isn't tracked, so its rows aren't compared.")</p>
+                }
+                else
+                {
+                    <h2>@change.Table</h2>
+                    <p class="muted">@change.File</p>
+                    @if (change.Problem is not null)
+                    {
+                        <p class="error">@change.Problem</p>
+                    }
+                    else if (!change.HasChanges)
+                    {
+                        <p class="ok">The database and the folder have the same rows.</p>
+                    }
+                    else
+                    {
+                        <p>@Counts(change)</p>
+                        <table class="grid">
+                            <thead><tr><th>Key</th><th>Difference</th></tr></thead>
+                            <tbody>
+                                @foreach (var r in change.Rows)
+                                {
+                                    <tr><td>@r.Key</td><td>@RowText(r)</td></tr>
+                                }
+                            </tbody>
+                        </table>
+                        @if (change.Rows.Count < change.New + change.Modified + change.Deleted)
+                        {
+                            <p class="muted">Showing the first @DataChange.MaxRows rows of each kind.</p>
+                        }
+                    }
+                }
+            </section>
+        </div>
+    }
+}
+
+@code {
+    private bool loaded;
+    private IReadOnlyList<DatabaseTable> tables = [];
+    private IReadOnlyList<TrackedTable> tracked = [];
+    private IReadOnlyList<DataChange> changes = [];
+    private string? search;
+    private string? current;
+    private string? confirmUnlink;
+
+    private DataChange? CurrentChange => changes.FirstOrDefault(c => string.Equals(c.Table, current, StringComparison.OrdinalIgnoreCase));
+
+    protected override async Task Refresh()
+    {
+        if (!Connect(out _, out var folder, out var connection))
+        {
+            return;
+        }
+
+        await Run("Reading tables and comparing rows...", () =>
+        {
+            (tables, tracked, changes) = (StaticDataService.Tables(connection), StaticDataService.Tracked(folder), StaticDataService.Compare(folder, connection));
+            loaded = true;
+            confirmUnlink = null;
+            current ??= changes.FirstOrDefault()?.Table;
+            return null;
+        });
+    }
+
+    private async Task Link(string table)
+    {
+        if (!Connect(out _, out var folder, out var connection))
+        {
+            return;
+        }
+
+        await Run("Linking...", () => Outcome(StaticDataService.Link(folder, connection, [table]), "Linked"));
+        current = table;
+        await RefreshAfter();
+    }
+
+    private async Task Unlink(string table)
+    {
+        if (!Connect(out _, out var folder, out _))
+        {
+            return;
+        }
+
+        await Run("Unlinking...", () => Outcome(StaticDataService.Unlink(folder, [table]), "Unlinked"));
+        await RefreshAfter();
+    }
+
+    internal static string Outcome(DataLinkResult result, string verb)
+    {
+        var lines = result.Tables.Select(t => $"{verb} {t.Quoted}.").Concat(result.Messages).ToList();
+        return result.Problems.Count > 0
+            ? throw new InvalidDataException(string.Join('\n', result.Problems.Concat(lines)))
+            : string.Join('\n', lines);
+    }
+
+    internal sealed record TableRow(string Table, long? Rows, bool HasPrimaryKey, TrackedTable? Tracked, DataChange? Change);
+
+    /// <summary>Tracked tables first (including any missing from the database), then the rest; both by name and matching <paramref name="search"/>.</summary>
+    internal static IEnumerable<TableRow> Rows(IReadOnlyList<DatabaseTable> tables, IReadOnlyList<TrackedTable> tracked, IReadOnlyList<DataChange> changes, string? search)
+    {
+        var rows = tables
+            .Select(t => (t.Quoted, (long?)t.Rows, t.HasPrimaryKey))
+            .Concat(tracked.Where(k => !tables.Any(t => Same(t.Quoted, k.Quoted))).Select(k => (k.Quoted, (long?)null, false)))
+            .Select(t => new TableRow(
+                t.Item1,
+                t.Item2,
+                t.Item3,
+                tracked.FirstOrDefault(k => Same(k.Quoted, t.Item1)),
+                changes.FirstOrDefault(c => Same(c.Table, t.Item1))));
+        return rows
+            .Where(r => string.IsNullOrWhiteSpace(search) || r.Table.Replace("[", "", StringComparison.Ordinal).Replace("]", "", StringComparison.Ordinal).Contains(search.Trim(), StringComparison.OrdinalIgnoreCase))
+            .OrderBy(r => r.Tracked is null)
+            .ThenBy(r => r.Table, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static bool Same(string a, string b) => string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static string Summary(TableRow row) => row switch
+    {
+        { Tracked: null } => "",
+        { Change.Problem: not null } => "Can't compare",
+        { Change: { HasChanges: true } c } => Counts(c),
+        { Change: not null } => "Same",
+        _ => "",
+    };
+
+    private static string Counts(DataChange c) =>
+        string.Create(CultureInfo.CurrentCulture, $"{c.New:N0} only in the database, {c.Modified:N0} differ, {c.Deleted:N0} only in the folder");
+
+    private static string RowText(RowChange row) => row.Status switch
+    {
+        ObjectStatus.New => "Only in the database",
+        ObjectStatus.Deleted => "Only in the folder",
+        _ => "Differs: " + string.Join(", ", row.Columns),
+    };
+}

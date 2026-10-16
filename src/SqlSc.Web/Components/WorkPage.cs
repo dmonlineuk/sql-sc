@@ -22,6 +22,8 @@ public abstract class WorkPage : ComponentBase
 
     protected GitState? Git { get; set; }
 
+    protected IReadOnlyList<GitBranch> Branches { get; set; } = [];
+
     protected bool Busy { get; private set; }
 
     protected string? BusyText { get; private set; }
@@ -55,13 +57,30 @@ public abstract class WorkPage : ComponentBase
                 GitOperation.Pull => GitSync.Pull(link.Folder),
                 _ => GitSync.Push(link.Folder),
             };
-            Git = GitSync.State(link.Folder);
+            UpdateGit(link.Folder);
             return string.IsNullOrWhiteSpace(output) ? "Done." : output;
         });
         if (operation == GitOperation.Pull)
         {
             await RefreshAfter();
         }
+    }
+
+    /// <summary>Switches to an existing branch, or creates one when <paramref name="create"/> is set, then compares again.</summary>
+    protected async Task ChangeBranch(string branch, bool create)
+    {
+        if (State.CurrentLink is not { } link)
+        {
+            return;
+        }
+
+        await Run(create ? "Creating the branch..." : "Switching branch...", () =>
+        {
+            var output = create ? GitSync.CreateBranch(link.Folder, branch) : GitSync.Switch(link.Folder, branch);
+            UpdateGit(link.Folder);
+            return string.IsNullOrWhiteSpace(output) ? $"On branch {branch}." : output;
+        });
+        await RefreshAfter();
     }
 
     /// <summary>Refreshes after other work, keeping that work's notice unless the refresh fails.</summary>
@@ -80,8 +99,11 @@ public abstract class WorkPage : ComponentBase
         }
     }
 
-    protected void UpdateGit(string folder) =>
+    protected void UpdateGit(string folder)
+    {
         Git = GitSync.IsRepository(folder) ? GitSync.State(folder) : null;
+        Branches = Git is null ? [] : GitSync.Branches(folder);
+    }
 
     protected bool Connect(out Link link, out WorkingFolder folder, out string connection)
     {

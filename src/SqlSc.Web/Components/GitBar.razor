@@ -4,12 +4,44 @@
     <button id="git-fetch" @onclick="() => OnGit.InvokeAsync(GitOperation.Fetch)" disabled="@Busy">Fetch</button>
     <button id="git-pull" @onclick="() => OnGit.InvokeAsync(GitOperation.Pull)" disabled="@Busy" title="git pull --ff-only">Pull</button>
     <button id="git-push" @onclick="() => OnGit.InvokeAsync(GitOperation.Push)" disabled="@Busy">Push</button>
+    <select id="git-branch" class="inline" @bind="target" disabled="@Busy" title="Branches; remote-only ones get a local tracking branch">
+        <option value="">Switch to...</option>
+        @foreach (var branch in Branches.Where(b => b.Name != g.Branch))
+        {
+            <option value="@branch.Name">@(branch.RemoteOnly ? $"{branch.Name} (remote)" : branch.Name)</option>
+        }
+    </select>
+    <button id="git-switch" @onclick="Switch" disabled="@(Busy || string.IsNullOrEmpty(target))"
+            title="@(g.ChangedFiles.Count > 0 ? "Commit or discard the working folder's changes first" : "git switch")">Switch</button>
+    <input id="git-new-branch" class="inline" type="text" @bind="newBranch" @bind:event="oninput" placeholder="new-branch" disabled="@Busy" />
+    <button id="git-create-branch" @onclick="Create" disabled="@(Busy || string.IsNullOrWhiteSpace(newBranch))" title="git switch --create, from the current commit">New branch</button>
 }
 
 @code {
+    private string? target;
+    private string? newBranch;
+
     [Parameter] public GitState? Git { get; set; }
+
+    [Parameter] public IReadOnlyList<GitBranch> Branches { get; set; } = [];
 
     [Parameter] public bool Busy { get; set; }
 
     [Parameter] public EventCallback<GitOperation> OnGit { get; set; }
+
+    [Parameter] public EventCallback<(string Branch, bool Create)> OnBranch { get; set; }
+
+    private async Task Switch()
+    {
+        var branch = target!;
+        target = null;
+        await OnBranch.InvokeAsync((branch, false));
+    }
+
+    private async Task Create()
+    {
+        var branch = newBranch!.Trim();
+        newBranch = null;
+        await OnBranch.InvokeAsync((branch, true));
+    }
 }

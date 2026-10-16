@@ -49,6 +49,41 @@ public sealed class GitSyncTests : IDisposable
     }
 
     [Fact]
+    public void ListsBranchesAndSwitchesOnlyWithoutUncommittedChanges()
+    {
+        var remote = Path.Combine(root, "remote.git");
+        Git.RunOrThrow(root, "init", "--quiet", "--bare", "-b", "main", remote);
+        var theirs = Clone(remote, "theirs");
+        Commit(theirs, "a.sql", "one");
+        GitSync.Push(theirs);
+        GitSync.CreateBranch(theirs, "feature/x");
+        Commit(theirs, "b.sql", "two");
+        GitSync.Push(theirs);
+
+        var mine = Clone(remote, "mine");
+        Assert.Equal([new GitBranch("main", false), new GitBranch("feature/x", true)], GitSync.Branches(mine));
+
+        File.WriteAllText(Path.Combine(mine, "c.sql"), "three");
+        var refused = Assert.Throws<InvalidDataException>(() => GitSync.Switch(mine, "feature/x"));
+        Assert.Contains("1 uncommitted change", refused.Message, StringComparison.Ordinal);
+        Assert.Equal("main", GitSync.State(mine).Branch);
+
+        File.Delete(Path.Combine(mine, "c.sql"));
+        GitSync.Switch(mine, "feature/x");
+        Assert.Equal(("feature/x", "origin/feature/x", 0, 0), Summary(GitSync.State(mine)));
+        Assert.True(File.Exists(Path.Combine(mine, "b.sql")));
+        Assert.Equal([new GitBranch("feature/x", false), new GitBranch("main", false)], GitSync.Branches(mine));
+
+        File.WriteAllText(Path.Combine(mine, "c.sql"), "three");
+        GitSync.CreateBranch(mine, "mine/new");
+        Assert.Equal(("mine/new", null, 0, 0), Summary(GitSync.State(mine)));
+        Assert.Equal(["?? c.sql"], GitSync.State(mine).ChangedFiles);
+
+        Assert.Throws<InvalidDataException>(() => GitSync.CreateBranch(mine, "bad name"));
+        Assert.Throws<InvalidDataException>(() => GitSync.Switch(mine, "--orphan"));
+    }
+
+    [Fact]
     public void FolderOutsideARepositoryIsNotOne() =>
         Assert.False(GitSync.IsRepository(root));
 

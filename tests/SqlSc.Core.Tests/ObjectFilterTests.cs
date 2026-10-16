@@ -38,6 +38,19 @@ public class ObjectFilterTests
 
     private static ObjectFilter Filter => ObjectFilter.LoadScpf(Path.Combine(FixturePaths.CreateTempFolder(("Filter.scpf", Scpf)), "Filter.scpf"));
 
+    [Fact]
+    public void RulesAreListedAsWritten()
+    {
+        var rules = Filter.Rules;
+
+        Assert.Equal(ObjectFilter.AllObjects, rules[0].ObjectType);
+        Assert.False(rules[0].Include);
+        Assert.StartsWith("(@SCHEMA = 'test')", rules[0].Expression, StringComparison.Ordinal);
+        Assert.Contains(new FilterRule("StoredProcedure", true, "@NAME NOT LIKE 'tmp%'"), rules);
+        Assert.Contains(new FilterRule("ExternalTable", true, ""), rules);
+        Assert.Empty(ObjectFilter.IncludeAll.Rules);
+    }
+
     [Theory]
     [InlineData("Table", "dbo", "Customer", true)]
     [InlineData("Table", "test", "Customer", false)]

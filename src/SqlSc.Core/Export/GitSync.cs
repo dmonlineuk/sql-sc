@@ -8,7 +8,10 @@ namespace SqlSc.Core.Export;
 /// </summary>
 public sealed record GitState(string? Branch, string? Upstream, int Ahead, int Behind, IReadOnlyList<string> ChangedFiles);
 
-/// <summary>The git operations the UI offers on a working folder's repository: status, fetch, pull (fast-forward only) and push.</summary>
+/// <summary>A branch the working folder can switch to. A <see cref="RemoteOnly"/> branch exists only on a remote; switching to it creates a local branch that tracks it.</summary>
+public sealed record GitBranch(string Name, bool RemoteOnly);
+
+/// <summary>The git operations the UI offers on a working folder's repository: status, branches, fetch, pull (fast-forward only) and push.</summary>
 public static class GitSync
 {
     public static bool IsRepository(string folder) =>
@@ -32,6 +35,54 @@ public static class GitSync
             .Select(l => l.TrimEnd('\r'))
             .ToList();
         return new GitState(branch, upstream, ahead, behind, changed);
+    }
+
+    /// <summary>Local branches, then branches that exist only on a remote, by name.</summary>
+    public static IReadOnlyList<GitBranch> Branches(string folder)
+    {
+        static IEnumerable<string> Refs(string folder, string prefix) =>
+            Git.RunOrThrow(folder, "for-each-ref", "--format=%(refname)", prefix)
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                .Select(r => r.TrimEnd('\r')[prefix.Length..]);
+
+        var local = Refs(folder, "refs/heads/").Order(StringComparer.Ordinal).ToList();
+        var remote = Refs(folder, "refs/remotes/")
+            .Select(r => r.IndexOf('/', StringComparison.Ordinal) is var slash and > 0 ? r[(slash + 1)..] : null)
+            .OfType<string>()
+            .Where(r => r != "HEAD" && !local.Contains(r, StringComparer.Ordinal))
+            .Distinct(StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal);
+        return [.. local.Select(b => new GitBranch(b, false)), .. remote.Select(b => new GitBranch(b, true))];
+    }
+
+    /// <summary>
+    /// Switches to <paramref name="branch"/>, creating a tracking branch for a remote-only one. Refuses while the working folder has
+    /// uncommitted changes, so they're never carried onto another branch or mixed up with its scripts.
+    /// </summary>
+    public static string Switch(string folder, string branch)
+    {
+        CheckName(folder, branch);
+        if (State(folder).ChangedFiles is { Count: > 0 } changed)
+        {
+            throw new InvalidDataException($"The working folder has {changed.Count} uncommitted change(s). Commit them, or stash or discard them in git, before switching branch.");
+        }
+
+        return Combined(Git.Run(folder, "switch", "--quiet", branch), "switch");
+    }
+
+    /// <summary>Creates <paramref name="branch"/> from the current commit and switches to it. Uncommitted changes stay in the working folder.</summary>
+    public static string CreateBranch(string folder, string branch)
+    {
+        CheckName(folder, branch);
+        return Combined(Git.Run(folder, "switch", "--quiet", "--create", branch), "switch --create");
+    }
+
+    private static void CheckName(string folder, string branch)
+    {
+        if (string.IsNullOrWhiteSpace(branch) || branch.StartsWith('-') || Git.Run(folder, "check-ref-format", "--branch", branch).ExitCode != 0)
+        {
+            throw new InvalidDataException($"'{branch}' isn't a valid branch name.");
+        }
     }
 
     /// <summary>Fetches the upstream so <see cref="State"/> shows how far behind the branch is.</summary>

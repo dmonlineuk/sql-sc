@@ -2,6 +2,7 @@ using System.Data.SqlTypes;
 using System.Globalization;
 using System.Text;
 using Microsoft.Data.SqlClient;
+using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
 using SqlSc.Core.Export;
 using SqlSc.Core.WorkingFolders;
@@ -16,6 +17,12 @@ public sealed record TrackedTable(string Schema, string Name, string File)
 
 /// <summary>What linking or unlinking tables did: the tables changed, warnings, and why some couldn't be.</summary>
 public sealed record DataLinkResult(IReadOnlyList<TrackedTable> Tables, IReadOnlyList<string> Messages, IReadOnlyList<string> Problems);
+
+/// <summary>A user table in the database that could be tracked for static data. Only tables with a primary key can be.</summary>
+public sealed record DatabaseTable(string Schema, string Name, long Rows, bool HasPrimaryKey)
+{
+    public string Quoted => DataTable.Quote(Schema) + "." + DataTable.Quote(Name);
+}
 
 /// <summary>Rows changed in a static data table. On a script-only apply these are the rows the script would change.</summary>
 public sealed record AppliedData(string Table, string File, int Inserted, int Updated, int Deleted);
@@ -51,6 +58,33 @@ public static class StaticDataService
                 ? new TrackedTable(schema, name, Path.Combine(folder.DataFolder, file))
                 : throw new InvalidDataException($"{RedgateDatabaseInfo.FileName} lists data file '{file}', which isn't named Schema.Table{Suffix}."))
             .ToList();
+
+    /// <summary>The database's user tables with their approximate row counts, by schema and name. sql-sc's own change log isn't listed.</summary>
+    public static IReadOnlyList<DatabaseTable> Tables(string connectionString)
+    {
+        const string sql = """
+            SELECT s.name, t.name,
+                ISNULL((SELECT SUM(p.rows) FROM sys.partitions p WHERE p.object_id = t.object_id AND p.index_id IN (0, 1)), 0),
+                CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.key_constraints k WHERE k.parent_object_id = t.object_id AND k.type = 'PK') THEN 1 ELSE 0 END AS bit)
+            FROM sys.tables t
+            JOIN sys.schemas s ON s.schema_id = t.schema_id
+            WHERE t.is_ms_shipped = 0 AND NOT (s.name = @logSchema AND t.name = @logTable)
+            ORDER BY s.name, t.name;
+            """;
+        using var connection = new SqlConnection(connectionString);
+        connection.Open();
+        using var command = new SqlCommand(sql, connection);
+        command.Parameters.AddWithValue("@logSchema", ChangeLogTable.SchemaName);
+        command.Parameters.AddWithValue("@logTable", ChangeLogTable.TableName);
+        using var reader = command.ExecuteReader();
+        var tables = new List<DatabaseTable>();
+        while (reader.Read())
+        {
+            tables.Add(new DatabaseTable(reader.GetString(0), reader.GetString(1), reader.GetInt64(2), reader.GetBoolean(3)));
+        }
+
+        return tables;
+    }
 
     /// <summary>Starts tracking the data of <paramref name="names"/>. Each must exist in the database and have a primary key.</summary>
     public static DataLinkResult Link(WorkingFolder folder, string connectionString, IReadOnlyList<string> names)
@@ -139,7 +173,7 @@ public static class StaticDataService
     }
 
     /// <summary>How each tracked table's rows differ between the database and the folder.</summary>
-    internal static IReadOnlyList<DataChange> Compare(WorkingFolder folder, string connectionString)
+    public static IReadOnlyList<DataChange> Compare(WorkingFolder folder, string connectionString)
     {
         var tracked = Tracked(folder);
         if (tracked.Count == 0)

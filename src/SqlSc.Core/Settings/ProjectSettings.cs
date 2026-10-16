@@ -84,4 +84,7 @@ public sealed record ProjectSettings
     }
 
     public string Serialize() => JsonSerializer.Serialize(this, Json);
+
+    /// <summary>Writes these settings to the folder's <c>sql-sc.json</c>.</summary>
+    public void Save(string folder) => File.WriteAllText(Path.Combine(folder, FileName), Serialize() + Environment.NewLine);
 }

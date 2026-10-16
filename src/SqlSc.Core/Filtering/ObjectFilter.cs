@@ -10,6 +10,9 @@ namespace SqlSc.Core.Filtering;
 /// </summary>
 public sealed class ObjectFilter
 {
+    /// <summary>The Redgate element name of the rule that applies to every object type.</summary>
+    public const string AllObjects = "None";
+
     /// <summary>Redgate filter element name → DacFx object type names.</summary>
     private static readonly Dictionary<string, string[]> RedgateTypes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -53,13 +56,17 @@ public sealed class ObjectFilter
     private readonly Rule? global;
     private readonly Dictionary<string, Rule> byType;
 
-    private ObjectFilter(Rule? global, Dictionary<string, Rule> byType)
+    private ObjectFilter(Rule? global, Dictionary<string, Rule> byType, IReadOnlyList<FilterRule> rules)
     {
         this.global = global;
         this.byType = byType;
+        Rules = rules;
     }
 
-    public static ObjectFilter IncludeAll { get; } = new(null, new Dictionary<string, Rule>(StringComparer.Ordinal));
+    public static ObjectFilter IncludeAll { get; } = new(null, new Dictionary<string, Rule>(StringComparer.Ordinal), []);
+
+    /// <summary>The file's rules in order, as written. <see cref="FilterRule.ObjectType"/> is <see cref="AllObjects"/> for the rule on every object.</summary>
+    public IReadOnlyList<FilterRule> Rules { get; }
 
     public bool IsEmpty => global is null && byType.Count == 0;
 
@@ -72,9 +79,11 @@ public sealed class ObjectFilter
 
         Rule? global = null;
         var byType = new Dictionary<string, Rule>(StringComparer.Ordinal);
+        var rules = new List<FilterRule>();
         foreach (var element in filters.Elements())
         {
             var include = !string.Equals(element.Element("Include")?.Value, "False", StringComparison.OrdinalIgnoreCase);
+            rules.Add(new FilterRule(element.Name.LocalName, include, element.Element("Expression")?.Value.Trim() ?? ""));
             Rule rule;
             try
             {
@@ -98,7 +107,7 @@ public sealed class ObjectFilter
             }
         }
 
-        return new ObjectFilter(global, byType);
+        return new ObjectFilter(global, byType, rules);
     }
 
     /// <param name="objectType">DacFx object type name, e.g. <c>Table</c> or <c>Procedure</c>.</param>
@@ -116,3 +125,6 @@ public sealed class ObjectFilter
         public bool Includes(string schema, string name) => Expression.Matches(schema, name) == Include;
     }
 }
+
+/// <summary>One rule of a Redgate filter: the Redgate object type it applies to, whether matches are included or excluded, and its expression.</summary>
+public sealed record FilterRule(string ObjectType, bool Include, string Expression);
