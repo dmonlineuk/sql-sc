@@ -14,6 +14,9 @@ public enum GitOperation
     Push,
 }
 
+/// <summary>A branch to switch to or create, and what to do first with the working folder's uncommitted changes.</summary>
+public sealed record BranchRequest(string Branch, bool Create, UncommittedChanges Changes = UncommittedChanges.Refuse, string? Message = null);
+
 /// <summary>A page that compares the linked folder with its database: one piece of work at a time, with its outcome as a notice.</summary>
 public abstract class WorkPage : ComponentBase
 {
@@ -23,6 +26,8 @@ public abstract class WorkPage : ComponentBase
     protected GitState? Git { get; set; }
 
     protected IReadOnlyList<GitBranch> Branches { get; set; } = [];
+
+    protected IReadOnlyList<GitStash> Stashes { get; set; } = [];
 
     protected bool Busy { get; private set; }
 
@@ -66,19 +71,38 @@ public abstract class WorkPage : ComponentBase
         }
     }
 
-    /// <summary>Switches to an existing branch, or creates one when <paramref name="create"/> is set, then compares again.</summary>
-    protected async Task ChangeBranch(string branch, bool create)
+    /// <summary>Switches to an existing branch or creates one, then compares again.</summary>
+    protected async Task ChangeBranch(BranchRequest request)
     {
         if (State.CurrentLink is not { } link)
         {
             return;
         }
 
-        await Run(create ? "Creating the branch..." : "Switching branch...", () =>
+        await Run(request.Create ? "Creating the branch..." : "Switching branch...", () =>
         {
-            var output = create ? GitSync.CreateBranch(link.Folder, branch) : GitSync.Switch(link.Folder, branch);
+            var output = request.Create
+                ? GitSync.CreateBranch(link.Folder, request.Branch)
+                : GitSync.Switch(link.Folder, request.Branch, request.Changes, request.Message);
             UpdateGit(link.Folder);
-            return string.IsNullOrWhiteSpace(output) ? $"On branch {branch}." : output;
+            return string.IsNullOrWhiteSpace(output) ? $"On branch {request.Branch}." : output;
+        });
+        await RefreshAfter();
+    }
+
+    /// <summary>Restores a stash into the working folder, or deletes it, then compares again.</summary>
+    protected async Task ChangeStash((GitStash Stash, bool Restore) request)
+    {
+        if (State.CurrentLink is not { } link)
+        {
+            return;
+        }
+
+        await Run(request.Restore ? "Restoring the stash..." : "Deleting the stash...", () =>
+        {
+            var output = request.Restore ? GitSync.RestoreStash(link.Folder, request.Stash.Id) : GitSync.DropStash(link.Folder, request.Stash.Id);
+            UpdateGit(link.Folder);
+            return string.IsNullOrWhiteSpace(output) ? (request.Restore ? "Restored the stash." : "Deleted the stash.") : output;
         });
         await RefreshAfter();
     }
@@ -103,6 +127,7 @@ public abstract class WorkPage : ComponentBase
     {
         Git = GitSync.IsRepository(folder) ? GitSync.State(folder) : null;
         Branches = Git is null ? [] : GitSync.Branches(folder);
+        Stashes = Git is null ? [] : GitSync.Stashes(folder);
     }
 
     protected bool Connect(out Link link, out WorkingFolder folder, out string connection)

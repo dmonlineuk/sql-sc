@@ -38,3 +38,8 @@ select.inline, input.inline { width: auto; max-width: 14rem; }
 input.search { max-width: 24rem; }
 .checks label { display: flex; gap: .4rem; align-items: center; font-weight: normal; margin: .3rem 0; }
 .table-scroll { max-height: 36rem; overflow: auto; }
+button.danger { background: #cf222e; border-color: #cf222e; color: #fff; }
+.git-panel { flex-basis: 100%; border: 1px solid var(--border); border-radius: 4px; padding: .6rem .8rem; background: #f6f8fa; }
+.git-panel .option { margin: .7rem 0; padding-top: .5rem; border-top: 1px solid var(--border); }
+.git-panel .option p { margin: .2rem 0 .4rem; }
+.git-panel pre { margin: .3rem 0; font: 12px/1.4 ui-monospace, Consolas, monospace; max-height: 12rem; overflow: auto; }

@@ -66,6 +66,7 @@ public sealed class GitSyncTests : IDisposable
         File.WriteAllText(Path.Combine(mine, "c.sql"), "three");
         var refused = Assert.Throws<InvalidDataException>(() => GitSync.Switch(mine, "feature/x"));
         Assert.Contains("1 uncommitted change", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("Commit, stash or discard", refused.Message, StringComparison.Ordinal);
         Assert.Equal("main", GitSync.State(mine).Branch);
 
         File.Delete(Path.Combine(mine, "c.sql"));
@@ -81,6 +82,59 @@ public sealed class GitSyncTests : IDisposable
 
         Assert.Throws<InvalidDataException>(() => GitSync.CreateBranch(mine, "bad name"));
         Assert.Throws<InvalidDataException>(() => GitSync.Switch(mine, "--orphan"));
+    }
+
+    [Fact]
+    public void UncommittedChangesCanBeCommittedStashedOrDiscardedBeforeSwitching()
+    {
+        var repo = Path.Combine(root, "repo");
+        Git.RunOrThrow(root, "init", "--quiet", "-b", "main", repo);
+        Git.RunOrThrow(repo, "config", "user.email", "test@example.com");
+        Git.RunOrThrow(repo, "config", "user.name", "Test");
+        Commit(repo, "a.sql", "one");
+        Commit(repo, "b.sql", "two");
+        GitSync.CreateBranch(repo, "test");
+
+        File.Delete(Path.Combine(repo, "a.sql"));
+        File.WriteAllText(Path.Combine(repo, "c.sql"), "three");
+        Assert.Throws<InvalidDataException>(() => GitSync.Switch(repo, "main", UncommittedChanges.Commit));
+        GitSync.Switch(repo, "main", UncommittedChanges.Commit, "Test deletions");
+        Assert.Equal(("main", 0), (GitSync.State(repo).Branch, GitSync.State(repo).ChangedFiles.Count));
+        Assert.True(File.Exists(Path.Combine(repo, "a.sql")));
+        Assert.False(File.Exists(Path.Combine(repo, "c.sql")));
+        Assert.Equal("Test deletions", Git.RunOrThrow(repo, "log", "-1", "--format=%s", "test"));
+        Assert.Equal("D\ta.sql\nA\tc.sql", Git.RunOrThrow(repo, "show", "--format=", "--name-status", "test").ReplaceLineEndings("\n"));
+
+        File.WriteAllText(Path.Combine(repo, "b.sql"), "changed");
+        File.WriteAllText(Path.Combine(repo, "d.sql"), "four");
+        GitSync.Switch(repo, "test", UncommittedChanges.Stash);
+        Assert.Equal(("test", 0), (GitSync.State(repo).Branch, GitSync.State(repo).ChangedFiles.Count));
+        var stash = Assert.Single(GitSync.Stashes(repo));
+        Assert.Equal("On main: sql-sc: before switching to test", stash.Description);
+
+        File.WriteAllText(Path.Combine(repo, "e.sql"), "five");
+        Assert.Throws<InvalidDataException>(() => GitSync.RestoreStash(repo, stash.Id));
+        GitSync.Discard(repo);
+        Assert.False(File.Exists(Path.Combine(repo, "e.sql")));
+
+        GitSync.Switch(repo, "main");
+        GitSync.RestoreStash(repo, stash.Id);
+        Assert.Empty(GitSync.Stashes(repo));
+        Assert.Equal("changed", File.ReadAllText(Path.Combine(repo, "b.sql")));
+        Assert.Equal("four", File.ReadAllText(Path.Combine(repo, "d.sql")));
+
+        GitSync.Stash(repo, "keep");
+        Assert.Throws<InvalidDataException>(() => GitSync.RestoreStash(repo, "0000"));
+        GitSync.DropStash(repo, Assert.Single(GitSync.Stashes(repo)).Id);
+        Assert.Empty(GitSync.Stashes(repo));
+
+        File.Delete(Path.Combine(repo, "a.sql"));
+        File.WriteAllText(Path.Combine(repo, "f.sql"), "six");
+        GitSync.Switch(repo, "test", UncommittedChanges.Discard);
+        GitSync.Switch(repo, "main");
+        Assert.Empty(GitSync.State(repo).ChangedFiles);
+        Assert.True(File.Exists(Path.Combine(repo, "a.sql")));
+        Assert.False(File.Exists(Path.Combine(repo, "f.sql")));
     }
 
     [Fact]

@@ -12,7 +12,7 @@ else
     <section class="card">
         <div class="row" style="margin-top:0">
             <button id="refresh" class="primary" @onclick="Refresh" disabled="@Busy">Refresh</button>
-            <GitBar Git="Git" Branches="Branches" Busy="Busy" OnGit="RunGit" OnBranch="b => ChangeBranch(b.Branch, b.Create)" />
+            <GitBar Git="Git" Branches="Branches" Stashes="Stashes" Busy="Busy" OnGit="RunGit" OnBranch="ChangeBranch" OnStash="ChangeStash" />
             @if (Busy)
             {
                 <span class="muted">@BusyText</span>
