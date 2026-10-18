@@ -9,6 +9,7 @@
         <NavLink href="commit">Commit</NavLink>
         <NavLink href="get-latest">Get latest</NavLink>
         <NavLink href="static-data">Static data</NavLink>
+        <NavLink href="locks">Locks</NavLink>
         <NavLink href="settings">Settings</NavLink>
     </nav>
     <span class="folder" title="@State.Folder">@(State.CurrentLink is { } link ? $"{Path.GetFileName(link.Folder)} - {ConnectionStrings.Describe(link.Connection)} ({link.Mode})" : "No folder linked")</span>

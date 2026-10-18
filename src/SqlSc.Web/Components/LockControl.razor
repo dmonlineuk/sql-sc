@@ -1,0 +1,61 @@
+@if (Lock is null)
+{
+    <div class="row">
+        <input id="lock-reason" class="inline" type="text" @bind="reason" placeholder="What you're working on (optional)" />
+        <button id="lock" @onclick="() => Send(new LockRequest(Name, true, reason))" disabled="@Busy">Lock</button>
+        <span class="muted">Shows everyone using this database that you're working on it.</span>
+    </div>
+}
+else if (Lock.Mine)
+{
+    <div class="row">
+        <span>Locked by you since @Since</span>
+        <button id="unlock" @onclick="() => Send(new LockRequest(Name, false))" disabled="@Busy">Unlock</button>
+    </div>
+}
+else
+{
+    <p class="warn">Locked by @Lock.LockedBy since @Since@(string.IsNullOrWhiteSpace(Lock.Reason) ? "" : $": {Lock.Reason}")</p>
+    @if (confirmUnlock)
+    {
+        <div class="row">
+            <span>Remove @Lock.LockedBy's lock? sql-sc doesn't tell them.</span>
+            <button id="unlock-other" class="danger" @onclick="() => Send(new LockRequest(Name, false, Force: true))" disabled="@Busy">Remove the lock</button>
+            <button @onclick="() => confirmUnlock = false">Cancel</button>
+        </div>
+    }
+    else
+    {
+        <button id="unlock-anyway" @onclick="() => confirmUnlock = true" disabled="@Busy">Unlock anyway</button>
+    }
+}
+
+@code {
+    private string? shownFor;
+    private string? reason;
+    private bool confirmUnlock;
+
+    [Parameter, EditorRequired] public string Name { get; set; } = null!;
+
+    [Parameter] public ObjectLock? Lock { get; set; }
+
+    [Parameter] public bool Busy { get; set; }
+
+    [Parameter] public EventCallback<LockRequest> OnChange { get; set; }
+
+    private string Since => Lock!.LockedAt.ToString("g", CultureInfo.CurrentCulture);
+
+    protected override void OnParametersSet()
+    {
+        if (Name != shownFor)
+        {
+            (shownFor, reason, confirmUnlock) = (Name, null, false);
+        }
+    }
+
+    private async Task Send(LockRequest request)
+    {
+        (reason, confirmUnlock) = (null, false);
+        await OnChange.InvokeAsync(request);
+    }
+}

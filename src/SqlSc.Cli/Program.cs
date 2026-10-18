@@ -126,6 +126,10 @@ status.SetAction(result =>
             _ => "Unknown",
         };
         Console.WriteLine($"  {change.Status,-9} {change.ObjectType,-24} {change.Name,-50} {side,-10} {who}");
+        if (change.Lock is { } objectLock)
+        {
+            Console.WriteLine($"      Locked by {(objectLock.Mine ? "you" : objectLock.LockedBy)}: {ObjectLocks.Describe(objectLock)}");
+        }
         if (change.Difference is not null)
         {
             Console.WriteLine($"      First difference: {change.Difference}");
@@ -393,7 +397,7 @@ var mineOption = new Option<bool>("--mine") { Description = "Objects whose last 
 var messageOption = new Option<string>("--message", "-m") { Description = "Commit message.", Required = true };
 var dataOption = new Option<bool>("--data") { Description = "Include the rows of selected static data tables (see `data link`). Without it only schema is included." };
 var dryRunOption = new Option<bool>("--dry-run") { Description = "Show the diff of each file export would write or delete, without changing anything." };
-var exportForceOption = new Option<bool>("--force") { Description = "Export objects even if they changed in the folder since they last matched the database, or changed on both sides." };
+var exportForceOption = new Option<bool>("--force") { Description = "Export objects even if they changed in the folder since they last matched the database, changed on both sides, or another login has locked them." };
 
 var export = new Command("export", "Write objects from the database into the working folder. Files of objects dropped from the database are deleted.")
 {
@@ -451,7 +455,7 @@ var applyObjectsArgument = new Argument<string[]>("objects") { Description = "Ob
 var applyAllOption = new Option<bool>("--all") { Description = "Every object that differs, except objects only in the database, which are dropped only when named." };
 var scriptOnlyOption = new Option<bool>("--script-only") { Description = "Print the deployment script and change nothing." };
 var allowDataLossOption = new Option<bool>("--allow-data-loss") { Description = "Allow changes that could lose data, such as dropping a column, or a table that has rows." };
-var forceOption = new Option<bool>("--force") { Description = "Apply objects even if they changed in the database since they last matched the folder, changed on both sides, or another login made their last change in the database." };
+var forceOption = new Option<bool>("--force") { Description = "Apply objects even if they changed in the database since they last matched the folder, changed on both sides, another login made their last change in the database, or another login has locked them." };
 var yesOption = new Option<bool>("--yes", "-y") { Description = "Don't ask before each change to a shared database. Needed when input is redirected or with --json." };
 var apply = new Command("apply", "Deploy the working folder's version of objects to the database (Get latest). In shared mode this changes the database for everyone.")
 {
@@ -509,7 +513,7 @@ apply.SetAction(result =>
 var uiFolderArgument = new Argument<DirectoryInfo?>("folder") { Description = "Working folder to open first.", Arity = ArgumentArity.ZeroOrOne };
 var portOption = new Option<int>("--port") { Description = "Local port to listen on. Defaults to a free port." };
 var noBrowserOption = new Option<bool>("--no-browser") { Description = "Print the address instead of opening a browser." };
-var ui = new Command("ui", "Open the local web UI (Setup, Commit, Get latest, Static data, Settings). It listens on 127.0.0.1 only; press Ctrl+C to stop it.")
+var ui = new Command("ui", "Open the local web UI (Setup, Commit, Get latest, Static data, Locks, Settings). It listens on 127.0.0.1 only; press Ctrl+C to stop it.")
 {
     uiFolderArgument,
     portOption,
@@ -536,15 +540,100 @@ ui.SetAction(async (result, cancellationToken) =>
     return 0;
 });
 
-var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, changeLog, link, data, doctor, export, commit, apply, ui };
+var lockObjectsArgument = new Argument<string[]>("objects") { Description = "Objects, e.g. Sales.Customer or [Sales].[Customer]. They don't have to exist yet.", Arity = ArgumentArity.OneOrMore };
+var reasonOption = new Option<string?>("--reason", "-r") { Description = "What you're working on, shown to others with the lock." };
+var lockCommand = new Command(
+    "lock",
+    "Soft-lock objects so everyone using the database sees you're working on them. export, commit and apply skip objects locked by another login, "
+        + "and refuse named ones, unless you pass --force. Locks don't stop changes made outside sql-sc, e.g. in SSMS.")
+{
+    folderArgument, lockObjectsArgument, reasonOption, connectionOption, jsonOption,
+};
+lockCommand.SetAction(result =>
+{
+    var connection = ResolveConnection(result.GetValue(connectionOption), result.GetRequiredValue(folderArgument).FullName);
+    return connection is null ? 2 : WriteLocks(result, ObjectLocks.Lock(connection, result.GetRequiredValue(lockObjectsArgument), result.GetValue(reasonOption)), "Locked");
+});
+var unlockForceOption = new Option<bool>("--force") { Description = "Unlock objects even if another login locked them." };
+var unlockCommand = new Command("unlock", "Release your locks on objects.")
+{
+    folderArgument, lockObjectsArgument, unlockForceOption, connectionOption, jsonOption,
+};
+unlockCommand.SetAction(result =>
+{
+    var connection = ResolveConnection(result.GetValue(connectionOption), result.GetRequiredValue(folderArgument).FullName);
+    return connection is null ? 2 : WriteLocks(result, ObjectLocks.Unlock(connection, result.GetRequiredValue(lockObjectsArgument), result.GetValue(unlockForceOption)), "Unlocked");
+});
+var locksScriptOnlyOption = new Option<bool>("--script-only") { Description = "Print the SQL that creates the lock table, for a db_owner to run if your login can't create it." };
+var locksCommand = new Command("locks", "List the locked objects in the database.")
+{
+    optionalFolderArgument, connectionOption, locksScriptOnlyOption, jsonOption,
+};
+locksCommand.SetAction(result =>
+{
+    if (result.GetValue(locksScriptOnlyOption))
+    {
+        Console.Write(ChangeLogTable.Script(ObjectLocks.CreateBatches));
+        return 0;
+    }
+
+    var connection = ResolveConnection(result.GetValue(connectionOption), result.GetValue(optionalFolderArgument)?.FullName ?? Environment.CurrentDirectory);
+    if (connection is null)
+    {
+        return 2;
+    }
+
+    var locks = ObjectLocks.Read(connection);
+    if (result.GetValue(jsonOption))
+    {
+        Console.WriteLine(JsonSerializer.Serialize(locks, json));
+        return 0;
+    }
+
+    if (locks.Count == 0)
+    {
+        Console.WriteLine("No objects are locked.");
+    }
+
+    foreach (var objectLock in locks)
+    {
+        Console.WriteLine($"  {objectLock.Name,-50} {ObjectLocks.Describe(objectLock)}{(objectLock.Mine ? "  (you)" : "")}");
+    }
+
+    return 0;
+});
+
+var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, changeLog, link, data, doctor, export, commit, apply, lockCommand, unlockCommand, locksCommand, ui };
 try
 {
     return await root.Parse(args).InvokeAsync(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
 }
-catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or Microsoft.Data.SqlClient.SqlException)
+catch (Exception ex) when (ex is IOException or InvalidDataException or UnauthorizedAccessException or ArgumentException or InvalidOperationException or Microsoft.Data.SqlClient.SqlException)
 {
     Console.Error.WriteLine(ex.Message);
     return 1;
+}
+
+int WriteLocks(ParseResult result, LockResult locked, string done)
+{
+    if (result.GetValue(jsonOption))
+    {
+        Console.WriteLine(JsonSerializer.Serialize(locked, json));
+    }
+    else
+    {
+        foreach (var objectLock in locked.Locks)
+        {
+            Console.WriteLine($"  {done} {objectLock.Name}");
+        }
+
+        foreach (var problem in locked.Problems)
+        {
+            Console.WriteLine($"  Problem: {problem}");
+        }
+    }
+
+    return locked.Problems.Count > 0 ? 1 : 0;
 }
 
 ExportSelection? Selection(ParseResult result)

@@ -169,6 +169,9 @@ public static class StatusService
         var data = StaticDataService.Compare(folder, connectionString);
         timings["data"] = Lap(stopwatch);
 
+        var locks = ObjectLocks.Read(connectionString);
+        timings["locks"] = Lap(stopwatch);
+
         return new StatusReport(
             server.ServerName,
             server.DatabaseName,
@@ -176,11 +179,12 @@ public static class StatusService
             folderModel.ObjectCount,
             folder.FilterPath,
             folderModel.Issues,
-            Group(raw, files, folder.Filter, changeLog),
+            ObjectLocks.Attach(Group(raw, files, folder.Filter, changeLog), locks),
             changeLog,
             timings,
             database.Info,
-            data);
+            data,
+            locks);
     }
 
     /// <summary>

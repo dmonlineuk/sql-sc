@@ -63,7 +63,7 @@ public static class ApplyService
     /// <param name="allowDataLoss">Allow changes that could lose data, such as dropping a column or a table with rows.</param>
     /// <param name="force">
     /// Overwrite objects whose last change in the database was made by another login, or that changed in the database since they
-    /// last matched the folder.
+    /// last matched the folder, or that another login has locked.
     /// </param>
     /// <param name="baseline">Where the baseline is kept; null to keep none.</param>
     /// <param name="confirm">Asks which changes to make; null to make them all.</param>
@@ -92,9 +92,15 @@ public static class ApplyService
         var problems = new List<string>();
         var skipped = new List<string>();
         var selection = new ExportSelection(names, all, Data: data);
-        var selected = SideGuard.Filter(
-            ExportService.Select(report, selection, connectionString, problems).Where(c => !all || c.Status != ObjectStatus.New),
-            ChangeSide.Database,
+        var selected = ObjectLocks.Filter(
+            SideGuard.Filter(
+                ExportService.Select(report, selection, connectionString, problems).Where(c => !all || c.Status != ObjectStatus.New),
+                ChangeSide.Database,
+                selection.NamedObjects,
+                force,
+                problems,
+                skipped),
+            "apply",
             selection.NamedObjects,
             force,
             problems,

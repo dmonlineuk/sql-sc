@@ -1,0 +1,122 @@
+@page "/locks"
+@inherits WorkPage
+
+<PageTitle>sql-sc - Locks</PageTitle>
+
+@if (State.CurrentLink is not { } link)
+{
+    <section class="card"><p>Link a working folder to a database on <a href="">Setup</a> first.</p></section>
+}
+else
+{
+    <section class="card">
+        <div class="row" style="margin-top:0">
+            <button id="refresh" class="primary" @onclick="Refresh" disabled="@Busy">Refresh</button>
+            @if (Busy)
+            {
+                <span class="muted">@BusyText</span>
+            }
+        </div>
+        <p class="muted">
+            A lock tells everyone using this database that someone is working on an object. It doesn't stop anyone changing it, for example in SSMS.
+            Commit and Get latest leave objects locked by someone else unticked, and the command line skips them unless you pass --force.
+        </p>
+        @if (PasswordNeeded)
+        {
+            <PasswordPrompt Link="link" Busy="Busy" OnConnected="Refresh" />
+        }
+        @if (Notice is not null)
+        {
+            <p class="@(Failed ? "error" : "ok")">@Notice</p>
+        }
+    </section>
+
+    <section class="card">
+        <h2>Lock an object</h2>
+        <label for="lock-name">Object</label>
+        <input id="lock-name" type="text" @bind="name" placeholder="Sales.Customer" />
+        <label for="lock-name-reason">What you're working on (optional)</label>
+        <input id="lock-name-reason" type="text" @bind="reason" />
+        <div class="row">
+            <button id="lock-named" class="primary" @onclick="LockNamed" disabled="@(Busy || string.IsNullOrWhiteSpace(name))">Lock</button>
+            <span class="muted">The object doesn't have to exist yet.</span>
+        </div>
+    </section>
+
+    @if (loaded)
+    {
+        <section class="card">
+            <h2>@Locks.Count locked objects in @ConnectionStrings.Describe(link.Connection)</h2>
+            @if (Locks.Count > 0)
+            {
+                <table class="grid">
+                    <thead><tr><th>Object</th><th>Locked by</th><th>Since</th><th>Reason</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var objectLock in Locks.Values.OrderBy(l => l.Name, StringComparer.OrdinalIgnoreCase))
+                        {
+                            <tr>
+                                <td>@objectLock.Name</td>
+                                <td>@(objectLock.Mine ? "You" : objectLock.LockedBy)</td>
+                                <td>@objectLock.LockedAt.ToString("g", CultureInfo.CurrentCulture)</td>
+                                <td>@objectLock.Reason</td>
+                                <td>
+                                    @if (objectLock.Mine)
+                                    {
+                                        <button @onclick="() => ChangeLock(new LockRequest(objectLock.Name, false))" disabled="@Busy">Unlock</button>
+                                    }
+                                    else if (confirmUnlock == objectLock.Name)
+                                    {
+                                        <span>Remove @objectLock.LockedBy's lock? sql-sc doesn't tell them.</span>
+                                        <button class="danger" @onclick="() => UnlockOther(objectLock.Name)" disabled="@Busy">Remove the lock</button>
+                                        <button @onclick="() => confirmUnlock = null">Cancel</button>
+                                    }
+                                    else
+                                    {
+                                        <button @onclick="() => confirmUnlock = objectLock.Name" disabled="@Busy">Unlock anyway</button>
+                                    }
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        </section>
+    }
+}
+
+@code {
+    private bool loaded;
+    private string? name;
+    private string? reason;
+    private string? confirmUnlock;
+
+    protected override async Task Refresh()
+    {
+        if (!Connect(out _, out _, out var connection))
+        {
+            return;
+        }
+
+        await Run("Reading the locks...", () =>
+        {
+            SetLocks(ObjectLocks.Read(connection));
+            loaded = true;
+            return null;
+        });
+    }
+
+    private async Task LockNamed()
+    {
+        await ChangeLock(new LockRequest(name!.Trim(), true, reason));
+        if (!Failed)
+        {
+            (name, reason) = (null, null);
+        }
+    }
+
+    private async Task UnlockOther(string objectName)
+    {
+        confirmUnlock = null;
+        await ChangeLock(new LockRequest(objectName, false, Force: true));
+    }
+}

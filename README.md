@@ -28,7 +28,7 @@ folder and test the connection (Setup), and see each change with a side-by-side 
 optionally push (Commit), and pull, preview the deployment script for the changes you tick and apply it (Get latest). On
 a shared database, Get latest warns that applying changes it for everyone and asks you to confirm. Static data links and
 unlinks tables and shows which rows differ, and Settings edits the comparison options in `sql-sc.json` and shows the
-object filter. The git bar on Commit and Get latest switches branch (refused while the working folder has uncommitted
+object filter. Locks lists, adds and removes soft locks, which Commit and Get latest also show. The git bar on Commit and Get latest switches branch (refused while the working folder has uncommitted
 changes) or creates a new one. It listens on `127.0.0.1` only, and the address it prints includes a one-off token, so other
 users and websites can't use it. Press Ctrl+C to stop it.
 
@@ -105,6 +105,11 @@ dotnet run --project src/SqlSc.Cli -- apply path/to/working-folder --all --yes  
 dotnet run --project src/SqlSc.Cli -- data link path/to/working-folder Sales.Customer
 dotnet run --project src/SqlSc.Cli -- export path/to/working-folder Sales.Customer --data
 dotnet run --project src/SqlSc.Cli -- data unlink path/to/working-folder Sales.Customer
+
+# Soft locks: show everyone using the database that you're working on an object
+dotnet run --project src/SqlSc.Cli -- lock path/to/working-folder Sales.GetCustomer --reason "Adding paging"
+dotnet run --project src/SqlSc.Cli -- locks path/to/working-folder
+dotnet run --project src/SqlSc.Cli -- unlock path/to/working-folder Sales.GetCustomer
 ```
 
 `export` writes one file per object in Redgate's layout (`Tables\Sales.Customer.sql`, `Stored Procedures\...`) with the
@@ -146,6 +151,13 @@ statement in `[sqlsc].[ChangeLog]`. When it's installed, sql-sc uses it instead 
 `dbo`, so every login's changes are logged without extra permissions, and it never blocks DDL, even if it fails or the
 table is missing. Index rebuilds and statistics updates aren't logged. `public` can read the table. sql-sc never shows,
 exports or applies the `sqlsc` schema or the trigger. `changelog remove` drops them and what they recorded.
+
+`lock` records who is working on an object in the database's `[sqlsc].[Lock]` table, so everyone on a shared database
+sees it in `status`, `locks` and the UI. A lock is a warning, not a block: nothing stops changes made outside sql-sc, e.g.
+in SSMS. `export`, `commit` and `apply` skip objects locked by another login with `--all` or `--mine`, and refuse named
+ones, unless you pass `--force`. `unlock` releases your own locks; `unlock --force` removes someone else's. The table is
+created the first time anyone locks an object, which needs `CREATE TABLE`; if your login can't, a db_owner can run the
+script from `locks --script-only`. `public` can read and change it. sql-sc never shows, exports or applies it.
 
 Connection strings are plain `Microsoft.Data.SqlClient` ones, so SQL authentication, Windows authentication
 (`Integrated Security=true`) and Entra ID (`Authentication=Active Directory Default` or `Active Directory Interactive`) all work.

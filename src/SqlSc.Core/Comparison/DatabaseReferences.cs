@@ -37,11 +37,12 @@ public static class DatabaseReferences
     };
 
     /// <summary>
-    /// Objects that live outside the database, are created by SQL Server itself or are sql-sc's own change log, so never belong in source control.
+    /// Objects that live outside the database, are created by SQL Server itself or are sql-sc's own change log or lock table, so never belong in source control.
     /// </summary>
     public static bool IsInfrastructure(TSqlObject obj) =>
         ServerScopedTypes.Contains(obj.ObjectType.Name)
         || ChangeLogTable.Owns(obj)
+        || ObjectLocks.Owns(obj)
         || obj.ObjectType.Name is "SqlFile" or "DatabaseOptions" or "MasterKey"
         || (obj.ObjectType.Name == "Route" && obj.Name.Parts is ["AutoCreatedLocal"]);
 

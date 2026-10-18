@@ -43,7 +43,7 @@ else
                         <thead>
                             <tr>
                                 <th><input type="checkbox" checked="@(rows.All(x => x.Selected))" @onchange="e => SelectAll(e.Value is true)" title="Select all" /></th>
-                                <th>Type</th><th>Object</th><th>Change</th><th>Changed in</th><th>Changed by</th>
+                                <th>Type</th><th>Object</th><th>Change</th><th>Changed in</th><th>Changed by</th><th>Locked by</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -56,6 +56,7 @@ else
                                     <td>@row.Change</td>
                                     <td class="@(row.Side is ChangeSide.Folder or ChangeSide.Both ? "warn" : null)">@SideText(row.Side)</td>
                                     <td>@row.ChangedBy</td>
+                                    <td class="@(LockOn(row.Name) is { Mine: false } ? "warn" : null)">@LockText(row.Name)</td>
                                 </tr>
                             }
                         </tbody>
@@ -68,6 +69,10 @@ else
                 @if (rows.Any(x => x.Selected && x.Side is ChangeSide.Folder or ChangeSide.Both))
                 {
                     <p class="warn">Some selected objects changed in the folder since they last matched the database. Committing them replaces the folder's version with the database's.</p>
+                }
+                @if (rows.Any(x => x.Selected && LockOn(x.Name) is { Mine: false }))
+                {
+                    <p class="warn">Some selected objects are locked by someone else, who may still be working on them. Committing them puts their current state in git.</p>
                 }
                 <label for="message">Commit message</label>
                 <textarea id="message" @bind="message" @bind:event="oninput"></textarea>
@@ -85,6 +90,10 @@ else
                 else
                 {
                     <h2>@current.Name</h2>
+                    @if (!current.IsData)
+                    {
+                        <LockControl Name="@current.Name" Lock="LockOn(current.Name)" Busy="Busy" OnChange="ChangeLock" />
+                    }
                     @if (current.Detail is { } detail)
                     {
                         <p class="muted">@detail</p>
@@ -127,6 +136,7 @@ else
                 dryRun: true,
                 baseline: BaselineStore.Default,
                 includeChangedBy: true);
+            SetLocks(result.Status.Locks);
             rows = [.. result.Status.Changes.Select(ChangeRow.For), .. DataRows.Select(ChangeRow.For)];
             current = rows.FirstOrDefault();
             return Git is null ? $"{link.Folder} isn't in a git repository; Commit is unavailable." : null;
@@ -145,7 +155,7 @@ else
             [.. selected.Where(x => !x.IsData).Select(x => x.Name)],
             Data: selected.Any(x => x.IsData),
             DataNames: [.. selected.Where(x => x.IsData).Select(x => x.Name)],
-            Force: selected.Any(x => x.Side is ChangeSide.Folder or ChangeSide.Both));
+            Force: selected.Any(x => x.Side is ChangeSide.Folder or ChangeSide.Both || LockOn(x.Name) is { Mine: false }));
         var text = message!;
         await Run(push ? "Committing and pushing..." : "Committing...", () =>
         {
@@ -212,7 +222,7 @@ else
                 ? $"{last.LoginName} {last.StartTime.ToString("g", CultureInfo.CurrentCulture)}"
                 : null,
             Detail = change.Children.Count == 0 ? null : string.Join(", ", change.Children.Select(c => $"{c.Status} {c.ObjectType} {c.Name}")),
-            Selected = change.Side is not (ChangeSide.Folder or ChangeSide.Both),
+            Selected = change.Side is not (ChangeSide.Folder or ChangeSide.Both) && change.Lock is not { Mine: false },
         };
 
         public static ChangeRow For(DataChange data) => new()
