@@ -57,6 +57,7 @@
         <div class="row">
             <button id="test-connection" @onclick="TestConnection" disabled="@(busy || string.IsNullOrWhiteSpace(connection))">Test connection</button>
             <button id="save-link" class="primary" @onclick="ConnectAndSave" disabled="@(busy || string.IsNullOrWhiteSpace(connection))">Connect and save</button>
+            <button id="save-only" @onclick="SaveWithoutConnecting" disabled="@(busy || string.IsNullOrWhiteSpace(connection))" title="Saves the link without contacting the database">Save without connecting</button>
             @if (State.CurrentLink is not null)
             {
                 <button id="remove-link" @onclick="RemoveLink" disabled="@busy">Remove link</button>
@@ -224,6 +225,21 @@
             return;
         }
 
+        Save(folder, edited, unchanged, typed, linkMode, $"{Connected(info)} Link saved.");
+    }
+
+    private void SaveWithoutConnecting()
+    {
+        if (State.Folder is not { } folder || Effective() is null)
+        {
+            return;
+        }
+
+        Save(folder, connection!, SavedLinkUnchanged, TypedPassword(), mode, "Link saved without connecting to the database.");
+    }
+
+    private void Save(string folder, string edited, bool unchanged, string? typed, DatabaseMode linkMode, string text)
+    {
         var stored = ConnectionStrings.WithoutPassword(edited, out _);
         State.Links.Save(new Link(folder, stored, linkMode));
         if (State.CurrentLink is { } saved && (typed is not null || !unchanged))
@@ -233,7 +249,7 @@
 
         links = [.. State.Links.All()];
         (connection, password, failed) = (stored, null, false);
-        message = $"{Connected(info)} Link saved."
+        message = text
             + (typed is not null && ConnectionStrings.NeedsPassword(stored) ? " The password wasn't saved; sql-sc will use it until you close sql-sc ui." : string.Empty);
         State.NotifyChanged();
     }
