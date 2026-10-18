@@ -111,7 +111,7 @@ public static class GitSync
 
     /// <summary>Puts every change in the working folder, including new files, aside in a stash and leaves the folder as the last commit has it.</summary>
     public static string Stash(string folder, string message) =>
-        Combined(Git.Run(folder, "stash", "push", "--quiet", "--include-untracked", "-m", message, "--", "."), "stash");
+        Combined(Git.Run(folder, "-c", "apply.whitespace=nowarn", "stash", "push", "--quiet", "--include-untracked", "-m", message, "--", "."), "stash");
 
     public static IReadOnlyList<GitStash> Stashes(string folder) =>
         Git.RunOrThrow(folder, "stash", "list", "--format=%H%x1f%gs%x1f%cI")

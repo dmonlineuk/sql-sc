@@ -91,7 +91,7 @@ public sealed class GitSyncTests : IDisposable
         Git.RunOrThrow(root, "init", "--quiet", "-b", "main", repo);
         Git.RunOrThrow(repo, "config", "user.email", "test@example.com");
         Git.RunOrThrow(repo, "config", "user.name", "Test");
-        Commit(repo, "a.sql", "one");
+        Commit(repo, "a.sql", "one \nGO \n");
         Commit(repo, "b.sql", "two");
         GitSync.CreateBranch(repo, "test");
 
@@ -105,9 +105,10 @@ public sealed class GitSyncTests : IDisposable
         Assert.Equal("Test deletions", Git.RunOrThrow(repo, "log", "-1", "--format=%s", "test"));
         Assert.Equal("D\ta.sql\nA\tc.sql", Git.RunOrThrow(repo, "show", "--format=", "--name-status", "test").ReplaceLineEndings("\n"));
 
-        File.WriteAllText(Path.Combine(repo, "b.sql"), "changed");
+        File.WriteAllText(Path.Combine(repo, "b.sql"), "changed \nGO \n");
         File.WriteAllText(Path.Combine(repo, "d.sql"), "four");
-        GitSync.Switch(repo, "test", UncommittedChanges.Stash);
+        File.Delete(Path.Combine(repo, "a.sql"));
+        Assert.DoesNotContain("whitespace", GitSync.Switch(repo, "test", UncommittedChanges.Stash), StringComparison.Ordinal);
         Assert.Equal(("test", 0), (GitSync.State(repo).Branch, GitSync.State(repo).ChangedFiles.Count));
         var stash = Assert.Single(GitSync.Stashes(repo));
         Assert.Equal("On main: sql-sc: before switching to test", stash.Description);
@@ -118,10 +119,11 @@ public sealed class GitSyncTests : IDisposable
         Assert.False(File.Exists(Path.Combine(repo, "e.sql")));
 
         GitSync.Switch(repo, "main");
-        GitSync.RestoreStash(repo, stash.Id);
+        Assert.DoesNotContain("whitespace", GitSync.RestoreStash(repo, stash.Id), StringComparison.Ordinal);
         Assert.Empty(GitSync.Stashes(repo));
-        Assert.Equal("changed", File.ReadAllText(Path.Combine(repo, "b.sql")));
+        Assert.Equal("changed \nGO \n", File.ReadAllText(Path.Combine(repo, "b.sql")));
         Assert.Equal("four", File.ReadAllText(Path.Combine(repo, "d.sql")));
+        Assert.False(File.Exists(Path.Combine(repo, "a.sql")));
 
         GitSync.Stash(repo, "keep");
         Assert.Throws<InvalidDataException>(() => GitSync.RestoreStash(repo, "0000"));
