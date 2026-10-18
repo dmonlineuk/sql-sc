@@ -18,6 +18,10 @@ else
                 <span class="muted">@BusyText</span>
             }
         </div>
+        @if (PasswordNeeded)
+        {
+            <PasswordPrompt Link="State.CurrentLink!" Busy="Busy" OnConnected="Refresh" />
+        }
         @if (Notice is not null)
         {
             <p class="@(Failed ? "error" : "ok")">@Notice</p>

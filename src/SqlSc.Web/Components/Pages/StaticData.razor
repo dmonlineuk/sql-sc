@@ -18,6 +18,10 @@ else
             }
         </div>
         <p class="muted">Tracked tables keep their rows in the folder. Commit row changes on <a href="commit">Commit</a> and apply incoming rows on <a href="get-latest">Get latest</a>.</p>
+        @if (PasswordNeeded)
+        {
+            <PasswordPrompt Link="State.CurrentLink!" Busy="Busy" OnConnected="Refresh" />
+        }
         @if (Notice is not null)
         {
             <p class="@(Failed ? "error" : "ok")">@Notice</p>

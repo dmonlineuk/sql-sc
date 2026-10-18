@@ -37,6 +37,14 @@ public sealed class UiState(string? startFolder) : IDisposable
         }
     }
 
+    public bool HasPassword(string folder)
+    {
+        lock (passwords)
+        {
+            return passwords.ContainsKey(Path.GetFullPath(folder));
+        }
+    }
+
     /// <summary>The linked connection string with any remembered or <c>SQLSC_PASSWORD</c> password added.</summary>
     public string? ConnectionFor(Link link)
     {
