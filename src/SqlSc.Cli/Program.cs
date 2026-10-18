@@ -9,6 +9,7 @@ using SqlSc.Core.Comparison;
 using SqlSc.Core.Database;
 using SqlSc.Core.Diagnostics;
 using SqlSc.Core.Export;
+using SqlSc.Core.Filtering;
 using SqlSc.Core.Modeling;
 using SqlSc.Core.Settings;
 using SqlSc.Core.StaticData;
@@ -603,7 +604,117 @@ locksCommand.SetAction(result =>
     return 0;
 });
 
-var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, changeLog, link, data, doctor, export, commit, apply, lockCommand, unlockCommand, locksCommand, ui };
+var filterTypeArgument = new Argument<string>("type") { Description = "The object type the rule applies to, e.g. Table, View or StoredProcedure, or `all` for every object." };
+var filterShow = new Command("show", "Show the filter's rules and, when the folder is linked, how many of each type's objects it keeps.")
+{
+    optionalFolderArgument, connectionOption, jsonOption,
+};
+filterShow.SetAction(result =>
+{
+    var folderPath = result.GetValue(optionalFolderArgument)?.FullName ?? Environment.CurrentDirectory;
+    var file = FilterFile.RelativePath(folderPath);
+    var filter = FilterFile.Load(folderPath);
+    var connection = ResolveConnection(result.GetValue(connectionOption), folderPath, required: false);
+    var counts = connection is null ? null : CatalogSummary.Query(connection).CountByType(filter);
+    if (result.GetValue(jsonOption))
+    {
+        Console.WriteLine(JsonSerializer.Serialize(new { File = file, filter.Rules, Counts = counts }, json));
+        return 0;
+    }
+
+    Console.WriteLine(File.Exists(Path.Combine(folderPath, file)) ? file : $"{file} doesn't exist yet, so every object is tracked.");
+    foreach (var parts in filter.Rules.Select(FilterRuleParts.Of))
+    {
+        var mode = parts.Mode switch
+        {
+            FilterMode.Everything => "everything",
+            FilterMode.Nothing => "nothing",
+            FilterMode.Only => "only",
+            _ => "everything except",
+        };
+        Console.WriteLine($"  {FilterRuleParts.Describe(parts.ObjectType),-20} {mode}{(parts.Expression.Length == 0 ? "" : $" {parts.Expression}")}");
+    }
+
+    if (counts is not null)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"  {"Type",-20} {"Tracked",8} {"Left out",9}");
+        foreach (var count in counts)
+        {
+            Console.WriteLine(Invariant($"  {count.ObjectType,-20} {count.Tracked,8} {count.Total - count.Tracked,9}"));
+        }
+    }
+
+    return 0;
+});
+var includeOption = new Option<bool>("--include") { Description = "Track only objects matching the conditions; with no conditions, every object of the type." };
+var excludeOption = new Option<bool>("--exclude") { Description = "Track every object of the type except those matching the conditions." };
+var nothingOption = new Option<bool>("--none") { Description = "Track no objects of the type." };
+var schemaOption = new Option<string[]>("--schema") { Description = "A schema name or LIKE pattern, e.g. staging% (repeatable).", AllowMultipleArgumentsPerToken = false };
+var nameOption = new Option<string[]>("--name") { Description = "An object name or LIKE pattern, e.g. tmp% (repeatable).", AllowMultipleArgumentsPerToken = false };
+var matchAllOption = new Option<bool>("--match-all") { Description = "Match objects that meet every condition, rather than any." };
+var whereOption = new Option<string?>("--where") { Description = "A Redgate filter expression instead of --schema and --name, e.g. \"(@SCHEMA = 'dbo') AND (@NAME NOT LIKE 'tmp%')\"." };
+var filterSet = new Command("set", "Add or replace the filter rule for an object type. Creates the filter file if needed; commit it with git afterwards.")
+{
+    folderArgument, filterTypeArgument, includeOption, excludeOption, nothingOption, schemaOption, nameOption, matchAllOption, whereOption,
+};
+filterSet.SetAction(result =>
+{
+    var folderPath = result.GetRequiredValue(folderArgument).FullName;
+    var type = result.GetRequiredValue(filterTypeArgument);
+    if (ObjectFilter.RedgateType(type) is not { } redgateType)
+    {
+        Console.Error.WriteLine($"{type} isn't an object type a filter rule can apply to. Use all, {string.Join(", ", ObjectFilter.RedgateTypeNames)}.");
+        return 2;
+    }
+
+    var conditions = (result.GetValue(schemaOption) ?? []).Select(s => Condition(ConditionField.Schema, s))
+        .Concat((result.GetValue(nameOption) ?? []).Select(n => Condition(ConditionField.Name, n)))
+        .ToList();
+    var where = result.GetValue(whereOption);
+    var modes = new[] { result.GetValue(includeOption), result.GetValue(excludeOption), result.GetValue(nothingOption) }.Count(m => m);
+    if (modes != 1 || (where is not null && conditions.Count > 0) || (result.GetValue(nothingOption) && (where is not null || conditions.Count > 0)))
+    {
+        Console.Error.WriteLine("Pass one of --include, --exclude or --none, and either --schema/--name conditions or --where (not with --none).");
+        return 2;
+    }
+
+    var hasConditions = where is not null || conditions.Count > 0;
+    var mode = result.GetValue(nothingOption) ? FilterMode.Nothing
+        : result.GetValue(excludeOption) ? (hasConditions ? FilterMode.Except : FilterMode.Nothing)
+        : hasConditions ? FilterMode.Only : FilterMode.Everything;
+    var rule = where is not null
+        ? FilterRuleParts.Build(redgateType, mode, where)
+        : FilterRuleParts.Build(redgateType, mode, conditions, result.GetValue(matchAllOption));
+    var file = FilterFile.Save(folderPath, FilterFile.With(FilterFile.Load(folderPath).Rules, rule));
+    Console.WriteLine($"Saved {file}: {FilterRuleParts.Describe(redgateType)} {(rule.Include ? "includes" : "excludes")} {(rule.Expression == "TRUE" ? "everything" : rule.Expression)}. Commit it with git.");
+    return 0;
+});
+var filterRemove = new Command("remove", "Remove the filter rule for an object type.")
+{
+    folderArgument, filterTypeArgument,
+};
+filterRemove.SetAction(result =>
+{
+    var folderPath = result.GetRequiredValue(folderArgument).FullName;
+    var type = ObjectFilter.RedgateType(result.GetRequiredValue(filterTypeArgument)) ?? result.GetRequiredValue(filterTypeArgument);
+    var rules = FilterFile.Load(folderPath).Rules;
+    if (!rules.Any(r => r.ObjectType.Equals(type, StringComparison.OrdinalIgnoreCase)))
+    {
+        Console.Error.WriteLine($"The filter has no rule for {FilterRuleParts.Describe(type)}.");
+        return 1;
+    }
+
+    var file = FilterFile.Save(folderPath, FilterFile.Without(rules, type));
+    Console.WriteLine($"Saved {file}: removed the rule for {FilterRuleParts.Describe(type)}. Commit it with git.");
+    return 0;
+});
+var filterCommand = new Command("filter", "Choose which objects are under source control, with a Redgate-compatible Filter.scpf.")
+{
+    filterShow, filterSet, filterRemove,
+};
+
+var root = new RootCommand("sql-sc: database-first source control for SQL Server.") { load, status, changes, changeLog, link, data, doctor, export, commit, apply, lockCommand, unlockCommand, locksCommand, filterCommand, ui };
 try
 {
     return await root.Parse(args).InvokeAsync(new InvocationConfiguration { EnableDefaultExceptionHandler = false });
@@ -613,6 +724,9 @@ catch (Exception ex) when (ex is IOException or InvalidDataException or Unauthor
     Console.Error.WriteLine(ex.Message);
     return 1;
 }
+
+static FilterCondition Condition(ConditionField field, string pattern) =>
+    new(field, pattern.IndexOfAny(['%', '_', '[']) >= 0 ? ConditionOperator.Like : ConditionOperator.Equal, pattern);
 
 int WriteLocks(ParseResult result, LockResult locked, string done)
 {

@@ -32,7 +32,7 @@ else
     {
         <div class="split">
             <section class="card">
-                <h2>@(r.Status.Changes.Count + DataRows.Count) changes in @r.Status.Database on @r.Status.Server</h2>
+                <h2>@rows.Count changes in @r.Status.Database on @r.Status.Server</h2>
                 @if (rows.Count == 0)
                 {
                     <p class="muted">The database and the folder match.</p>
@@ -90,7 +90,12 @@ else
                 else
                 {
                     <h2>@current.Name</h2>
-                    @if (!current.IsData)
+                    @if (current.SettingsDiff is { } settingsDiff)
+                    {
+                        <p class="muted">A working folder settings file, changed since the last commit. Commit it to share it with your team.</p>
+                        <DiffView Unified="@settingsDiff" Empty="Only line endings differ." />
+                    }
+                    else if (!current.IsData)
                     {
                         <LockControl Name="@current.Name" Lock="LockOn(current.Name)" Busy="Busy" OnChange="ChangeLock" />
                     }
@@ -137,7 +142,8 @@ else
                 baseline: BaselineStore.Default,
                 includeChangedBy: true);
             SetLocks(result.Status.Locks);
-            rows = [.. result.Status.Changes.Select(ChangeRow.For), .. DataRows.Select(ChangeRow.For)];
+            var settingsFiles = Git is null ? [] : CommitService.SettingsChanges(folder);
+            rows = [.. result.Status.Changes.Select(ChangeRow.For), .. DataRows.Select(ChangeRow.For), .. settingsFiles.Select(ChangeRow.For)];
             current = rows.FirstOrDefault();
             return Git is null ? $"{link.Folder} isn't in a git repository; Commit is unavailable." : null;
         });
@@ -151,24 +157,39 @@ else
         }
 
         var selected = rows.Where(x => x.Selected).ToList();
+        List<string> settingsFiles = [.. selected.Where(x => x.SettingsDiff is not null).Select(x => x.Name)];
+        var objectsOrData = selected.Any(x => x.SettingsDiff is null);
         var selection = new ExportSelection(
-            [.. selected.Where(x => !x.IsData).Select(x => x.Name)],
+            [.. selected.Where(x => !x.IsData && x.SettingsDiff is null).Select(x => x.Name)],
             Data: selected.Any(x => x.IsData),
             DataNames: [.. selected.Where(x => x.IsData).Select(x => x.Name)],
             Force: selected.Any(x => x.Side is ChangeSide.Folder or ChangeSide.Both || LockOn(x.Name) is { Mine: false }));
         var text = message!;
         await Run(push ? "Committing and pushing..." : "Committing...", () =>
         {
-            var committed = CommitService.Commit(folder, connection, selection, text, baseline: BaselineStore.Default);
-            if (committed.Commit is null)
+            var (files, commit) = (Array.Empty<string>() as IReadOnlyList<string>, (string?)null);
+            if (objectsOrData)
             {
-                throw new InvalidDataException(committed.Export.Problems.Count > 0
-                    ? string.Join('\n', committed.Export.Problems)
-                    : "Nothing was committed.");
+                var committed = CommitService.Commit(folder, connection, selection, text, baseline: BaselineStore.Default, settingsFiles: settingsFiles);
+                if (committed.Export.Problems.Count > 0)
+                {
+                    throw new InvalidDataException(string.Join('\n', committed.Export.Problems));
+                }
+
+                (files, commit) = (committed.CommittedFiles, committed.Commit);
+            }
+            else
+            {
+                (files, commit) = CommitService.CommitSettings(folder, settingsFiles, text);
+            }
+
+            if (commit is null)
+            {
+                throw new InvalidDataException("Nothing was committed.");
             }
 
             var pushed = push ? GitSync.Push(link.Folder) : null;
-            return $"Committed {committed.CommittedFiles.Count} file(s) as {committed.Commit[..Math.Min(8, committed.Commit.Length)]}.{(push ? " Pushed." : "")}{(string.IsNullOrEmpty(pushed) ? "" : $"\n{pushed}")}";
+            return $"Committed {files.Count} file(s) as {commit[..Math.Min(8, commit.Length)]}.{(push ? " Pushed." : "")}{(string.IsNullOrEmpty(pushed) ? "" : $"\n{pushed}")}";
         });
         if (!Failed)
         {
@@ -210,6 +231,9 @@ else
 
         public bool IsData { get; init; }
 
+        /// <summary>For a settings file, its diff from the last commit; null for objects and static data.</summary>
+        public string? SettingsDiff { get; init; }
+
         public bool Selected { get; set; }
 
         public static ChangeRow For(ObjectChange change) => new()
@@ -232,6 +256,16 @@ else
             Change = string.Create(CultureInfo.InvariantCulture, $"{data.New} new, {data.Modified} modified, {data.Deleted} deleted rows"),
             File = data.File,
             IsData = true,
+            Selected = true,
+        };
+
+        public static ChangeRow For(SettingsFileChange file) => new()
+        {
+            Type = "Settings file",
+            Name = file.Path,
+            Change = file.Change,
+            File = file.Path,
+            SettingsDiff = file.Diff,
             Selected = true,
         };
     }

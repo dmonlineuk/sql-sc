@@ -43,3 +43,4 @@ button.danger { background: #cf222e; border-color: #cf222e; color: #fff; }
 .git-panel .option { margin: .7rem 0; padding-top: .5rem; border-top: 1px solid var(--border); }
 .git-panel .option p { margin: .2rem 0 .4rem; }
 .git-panel pre { margin: .3rem 0; font: 12px/1.4 ui-monospace, Consolas, monospace; max-height: 12rem; overflow: auto; }
+.filter-rule { border-top: 1px solid var(--border); padding: .6rem 0; }

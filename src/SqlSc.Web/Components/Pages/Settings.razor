@@ -34,36 +34,157 @@ else
 
     <section class="card">
         <h2>Object filter</h2>
-        @if (filterPath is null)
-        {
-            <p class="muted">No filter file, so every object is under source control.</p>
-        }
-        else if (filterError is not null)
+        <p class="muted">
+            @filterPath decides which objects are under source control, in Redgate's format. There's one rule for all objects, and
+            optionally one for each object type; an object is tracked only if every rule that applies keeps it. Save writes the file;
+            commit it with git to share it. LIKE patterns: % is any text, _ is one character, [_] is a literal underscore.
+        </p>
+        @if (filterError is not null)
         {
             <p class="error">@filterError</p>
         }
-        else
+        @if (ruleRows.Count == 0)
         {
-            <p class="muted">@filterPath. Edit the file to change it; Redgate's filter editor writes the same format.</p>
-            @if (rules.Count == 0)
+            <p class="muted">No rules, so every object is tracked.</p>
+        }
+        @foreach (var row in ruleRows)
+        {
+            <div class="filter-rule">
+                <div class="row" style="margin-top:0">
+                    <b>@FilterRuleParts.Describe(row.Type)</b>
+                    <select class="inline" @bind="row.Mode">
+                        <option value="@FilterMode.Everything">Track everything</option>
+                        <option value="@FilterMode.Nothing">Track nothing</option>
+                        <option value="@FilterMode.Only">Track only objects matching</option>
+                        <option value="@FilterMode.Except">Track everything except objects matching</option>
+                    </select>
+                    <button @onclick="() => ruleRows.Remove(row)">Remove rule</button>
+                </div>
+                @if (row.Mode is FilterMode.Only or FilterMode.Except)
+                {
+                    @if (row.Raw)
+                    {
+                        <div class="row">
+                            <input type="text" @bind="row.Expression" @bind:event="oninput" placeholder="(@@SCHEMA = 'dbo') AND (@@NAME NOT LIKE 'tmp%')" />
+                            @if (FilterExpression.Split(row.Expression, out _) is not null)
+                            {
+                                <button @onclick="() => UseConditions(row)">Use conditions</button>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        @foreach (var condition in row.Conditions)
+                        {
+                            <div class="row">
+                                <select class="inline" @bind="condition.Field">
+                                    <option value="@ConditionField.Schema">Schema</option>
+                                    <option value="@ConditionField.Name">Name</option>
+                                </select>
+                                <select class="inline" @bind="condition.Operator">
+                                    <option value="@ConditionOperator.Equal">=</option>
+                                    <option value="@ConditionOperator.NotEqual">!=</option>
+                                    <option value="@ConditionOperator.Like">LIKE</option>
+                                    <option value="@ConditionOperator.NotLike">NOT LIKE</option>
+                                </select>
+                                <input class="inline" type="text" @bind="condition.Value" @bind:event="oninput" />
+                                <button @onclick="() => row.Conditions.Remove(condition)">Remove</button>
+                            </div>
+                        }
+                        <div class="row">
+                            <button @onclick="() => row.Conditions.Add(new ConditionRow())">Add condition</button>
+                            @if (row.Conditions.Count > 1)
+                            {
+                                <label class="checks" style="margin:0"><input type="checkbox" @bind="row.MatchAll" /> Match every condition (AND), not any (OR)</label>
+                            }
+                            <button @onclick="() => EditExpression(row)">Edit as expression</button>
+                        </div>
+                    }
+                }
+            </div>
+        }
+        <div class="row">
+            <select class="inline" @bind="newType">
+                @foreach (var type in UnusedTypes)
+                {
+                    <option value="@type">@FilterRuleParts.Describe(type)</option>
+                }
+            </select>
+            <button id="add-rule" @onclick="AddRule" disabled="@(!UnusedTypes.Any())">Add rule</button>
+        </div>
+        <div class="row">
+            <button id="save-filter" class="primary" @onclick="SaveFilter">Save filter</button>
+            <button id="reset-filter" @onclick="LoadRules">Undo changes</button>
+        </div>
+        @if (filterMessage is not null)
+        {
+            <p class="@(filterFailed ? "error" : "ok")">@filterMessage</p>
+        }
+    </section>
+
+    <section class="card">
+        <h2>Preview</h2>
+        @if (State.CurrentLink is not { } link)
+        {
+            <p class="muted">Link the folder to a database on <a href="">Setup</a> to see which objects the filter keeps.</p>
+        }
+        else if (PasswordNeeded)
+        {
+            <PasswordPrompt Link="link" Busy="catalogBusy" OnConnected="LoadCatalog" />
+        }
+        else if (catalogBusy)
+        {
+            <p class="muted">Reading the database's objects...</p>
+        }
+        else if (catalogError is not null)
+        {
+            <p class="error">@catalogError</p>
+            <button @onclick="LoadCatalog">Try again</button>
+        }
+        else if (catalog is not null)
+        {
+            var (filter, error) = PreviewFilter();
+            @if (error is not null)
             {
-                <p class="muted">The filter has no rules, so every object is included.</p>
+                <p class="error">@error</p>
             }
             else
             {
-                <table class="grid">
-                    <thead><tr><th>Object type</th><th>Rule</th><th>Expression</th></tr></thead>
-                    <tbody>
-                        @foreach (var rule in rules)
-                        {
-                            <tr>
-                                <td>@(rule.ObjectType == ObjectFilter.AllObjects ? "All objects" : rule.ObjectType)</td>
-                                <td>@(rule.Include ? "Include matching" : "Exclude matching")</td>
-                                <td><code>@(rule.Expression.Length == 0 ? "(everything)" : rule.Expression)</code></td>
-                            </tr>
+                var counts = catalog.CountByType(filter!);
+                var leftOut = catalog.UserObjects.Where(o => !filter!.Includes(o.ObjectType, o.NameParts)).Select(o => (o.ObjectType, Name: o.Schema is null ? o.Name : $"{o.Schema}.{o.Name}")).ToList();
+                <p class="muted">Before saving: the filter as edited above keeps @counts.Sum(c => c.Tracked) of @counts.Sum(c => c.Total) objects in @ConnectionStrings.Describe(link.Connection). <button @onclick="LoadCatalog">Reload</button></p>
+                <div class="split">
+                    <table class="grid">
+                        <thead><tr><th>Object type</th><th>Tracked</th><th>Left out</th></tr></thead>
+                        <tbody>
+                            @foreach (var count in counts)
+                            {
+                                <tr><td>@count.ObjectType</td><td>@count.Tracked.ToString("N0", CultureInfo.CurrentCulture)</td><td>@((count.Total - count.Tracked).ToString("N0", CultureInfo.CurrentCulture))</td></tr>
+                            }
+                        </tbody>
+                    </table>
+                    <div>
+                        <input id="left-out-search" class="search" type="text" @bind="search" @bind:event="oninput" placeholder="Find a left-out object" />
+                        @{
+                            var shown = leftOut.Where(o => string.IsNullOrWhiteSpace(search) || o.Name.Contains(search.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
                         }
-                    </tbody>
-                </table>
+                        <div class="table-scroll">
+                            <table class="grid">
+                                <thead><tr><th>Left out (@shown.Count)</th><th>Type</th></tr></thead>
+                                <tbody>
+                                    @foreach (var o in shown.Take(500))
+                                    {
+                                        <tr><td>@o.Name</td><td>@o.ObjectType</td></tr>
+                                    }
+                                </tbody>
+                            </table>
+                            @if (shown.Count > 500)
+                            {
+                                <p class="muted">And @(shown.Count - 500) more; search to narrow the list.</p>
+                            }
+                        </div>
+                    </div>
+                </div>
             }
         }
     </section>
@@ -77,13 +198,34 @@ else
     private bool ignoreRoleMembership;
     private bool ignoreExtendedProperties;
     private string? filter;
-    private string? filterPath;
+    private string filterPath = ProjectSettings.DefaultFilter;
     private string? filterError;
-    private IReadOnlyList<FilterRule> rules = [];
+    private bool caseSensitive;
+    private List<RuleRow> ruleRows = [];
+    private string? newType;
+    private string? filterMessage;
+    private bool filterFailed;
+    private CatalogSummary? catalog;
+    private bool catalogBusy;
+    private string? catalogError;
+    private string? search;
     private string? message;
     private bool failed;
 
-    protected override void OnInitialized() => Load();
+    private bool PasswordNeeded => State.CurrentLink is { } link && ConnectionStrings.NeedsPassword(State.ConnectionFor(link)!);
+
+    private IEnumerable<string> UnusedTypes =>
+        new[] { ObjectFilter.AllObjects }.Concat(ObjectFilter.RedgateTypeNames).Where(t => !ruleRows.Any(r => r.Type == t));
+
+    protected override async Task OnInitializedAsync()
+    {
+        Load();
+        LoadRules();
+        if (State.CurrentLink is not null && !PasswordNeeded)
+        {
+            await LoadCatalog();
+        }
+    }
 
     private void Load()
     {
@@ -99,7 +241,6 @@ else
             (ignoreWhitespace, ignoreComments, ignoreColumnOrder) = (settings.Compare.IgnoreWhitespace, settings.Compare.IgnoreComments, settings.Compare.IgnoreColumnOrder);
             (ignorePermissions, ignoreRoleMembership, ignoreExtendedProperties) = (settings.Compare.IgnorePermissions, settings.Compare.IgnoreRoleMembership, settings.Compare.IgnoreExtendedProperties);
             filter = settings.Filter;
-            LoadFilter(folder, settings.Filter);
         }
         catch (InvalidDataException e)
         {
@@ -107,22 +248,115 @@ else
         }
     }
 
-    private void LoadFilter(string folder, string? configured)
+    private void LoadRules()
     {
-        filterPath = configured ?? (File.Exists(Path.Combine(folder, ProjectSettings.DefaultFilter)) ? ProjectSettings.DefaultFilter : null);
-        (filterError, rules) = (null, []);
-        if (filterPath is null)
+        (filterMessage, filterError, ruleRows) = (null, null, []);
+        if (State.Folder is not { } folder)
         {
             return;
         }
 
         try
         {
-            rules = ObjectFilter.LoadScpf(Path.Combine(folder, filterPath)).Rules;
+            filterPath = FilterFile.RelativePath(folder);
+            var loaded = FilterFile.Load(folder);
+            caseSensitive = loaded.CaseSensitive;
+            ruleRows = [.. loaded.Rules.Select(r => RuleRow.From(FilterRuleParts.Of(r)))];
         }
         catch (Exception e) when (e is IOException or InvalidDataException or System.Xml.XmlException or UnauthorizedAccessException)
         {
             filterError = $"{filterPath}: {e.Message}";
+        }
+
+        newType = UnusedTypes.FirstOrDefault();
+    }
+
+    private async Task LoadCatalog()
+    {
+        if (State.CurrentLink is not { } link || State.ConnectionFor(link) is not { } connection)
+        {
+            return;
+        }
+
+        (catalogBusy, catalogError) = (true, null);
+        try
+        {
+            catalog = await State.RunAsync(() => CatalogSummary.Query(connection));
+        }
+        catch (Exception e) when (e is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or ArgumentException)
+        {
+            catalogError = $"Couldn't read the database's objects: {e.Message}";
+        }
+        finally
+        {
+            catalogBusy = false;
+        }
+    }
+
+    private List<FilterRule> BuildRules() => [.. ruleRows.Select(r => r.ToRule())];
+
+    private (ObjectFilter? Filter, string? Error) PreviewFilter()
+    {
+        try
+        {
+            return (ObjectFilter.FromRules(BuildRules(), caseSensitive), null);
+        }
+        catch (InvalidDataException e)
+        {
+            return (null, $"Fix the rules to see a preview. {e.Message}");
+        }
+    }
+
+    private void AddRule()
+    {
+        if (newType is null || ruleRows.Any(r => r.Type == newType))
+        {
+            return;
+        }
+
+        var row = new RuleRow { Type = newType, Mode = FilterMode.Except };
+        row.Conditions.Add(new ConditionRow());
+        if (newType == ObjectFilter.AllObjects)
+        {
+            ruleRows.Insert(0, row);
+        }
+        else
+        {
+            ruleRows.Add(row);
+        }
+
+        newType = UnusedTypes.FirstOrDefault();
+    }
+
+    private static void EditExpression(RuleRow row)
+    {
+        row.Expression = row.ConditionsExpression();
+        row.Raw = true;
+    }
+
+    private static void UseConditions(RuleRow row)
+    {
+        var conditions = FilterExpression.Split(row.Expression, out var matchAll) ?? [];
+        row.Conditions = [.. conditions.Select(ConditionRow.From)];
+        (row.MatchAll, row.Raw) = (matchAll, false);
+    }
+
+    private void SaveFilter()
+    {
+        if (State.Folder is not { } folder)
+        {
+            return;
+        }
+
+        try
+        {
+            var file = FilterFile.Save(folder, BuildRules());
+            LoadRules();
+            (filterMessage, filterFailed) = ($"Saved {file}. Commit it with git to share it with your team.", false);
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or System.Xml.XmlException or UnauthorizedAccessException)
+        {
+            (filterMessage, filterFailed) = (e.Message, true);
         }
     }
 
@@ -156,12 +390,58 @@ else
                 },
             };
             settings.Save(folder);
-            LoadFilter(folder, configured);
+            LoadRules();
             (message, failed) = ($"Saved {ProjectSettings.FileName}. Commit it with git to share it with your team.", false);
         }
         catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
         {
             (message, failed) = (e.Message, true);
         }
+    }
+
+    private sealed class ConditionRow
+    {
+        public ConditionField Field { get; set; } = ConditionField.Schema;
+
+        public ConditionOperator Operator { get; set; } = ConditionOperator.Like;
+
+        public string Value { get; set; } = "";
+
+        public static ConditionRow From(FilterCondition condition) => new() { Field = condition.Field, Operator = condition.Operator, Value = condition.Value };
+    }
+
+    private sealed class RuleRow
+    {
+        public required string Type { get; init; }
+
+        public FilterMode Mode { get; set; }
+
+        public bool MatchAll { get; set; }
+
+        public bool Raw { get; set; }
+
+        public string Expression { get; set; } = "";
+
+        public List<ConditionRow> Conditions { get; set; } = [];
+
+        public static RuleRow From(FilterRuleParts parts) => new()
+        {
+            Type = parts.ObjectType,
+            Mode = parts.Mode,
+            MatchAll = parts.MatchAll,
+            Raw = parts.Conditions is null,
+            Expression = parts.Expression,
+            Conditions = [.. (parts.Conditions ?? []).Select(ConditionRow.From)],
+        };
+
+        public string ConditionsExpression() =>
+            FilterRuleParts.Build(Type, FilterMode.Only, Filled(), MatchAll) is { Expression: var e } && e != "TRUE" ? e : "";
+
+        public FilterRule ToRule() => Raw
+            ? FilterRuleParts.Build(Type, Mode, Expression)
+            : FilterRuleParts.Build(Type, Mode, Filled(), MatchAll);
+
+        private List<FilterCondition> Filled() =>
+            [.. Conditions.Where(c => !string.IsNullOrWhiteSpace(c.Value)).Select(c => new FilterCondition(c.Field, c.Operator, c.Value.Trim()))];
     }
 }

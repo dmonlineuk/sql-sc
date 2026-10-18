@@ -38,6 +38,88 @@ public sealed class FilterExpression
         return new FilterExpression(text, result);
     }
 
+    /// <summary>
+    /// Splits an expression made only of simple conditions joined by one kind of operator, such as
+    /// <c>(@SCHEMA LIKE 'staging%') OR (@NAME = 'Customers')</c>, into its conditions; null for anything else.
+    /// <paramref name="matchAll"/> is whether they are joined by AND.
+    /// </summary>
+    public static IReadOnlyList<FilterCondition>? Split(string? text, out bool matchAll)
+    {
+        matchAll = false;
+        if (string.IsNullOrWhiteSpace(text) || text.Trim().Equals("TRUE", StringComparison.OrdinalIgnoreCase))
+        {
+            return [];
+        }
+
+        List<string> tokens;
+        try
+        {
+            tokens = Tokenize(text);
+        }
+        catch (FormatException)
+        {
+            return null;
+        }
+
+        var conditions = new List<FilterCondition>();
+        string? joiner = null;
+        var i = 0;
+        while (true)
+        {
+            var opened = 0;
+            while (i < tokens.Count && tokens[i] == "(")
+            {
+                (opened, i) = (opened + 1, i + 1);
+            }
+
+            if (i + 2 >= tokens.Count || tokens[i] is not ("@SCHEMA" or "@NAME"))
+            {
+                return null;
+            }
+
+            var field = tokens[i] == "@SCHEMA" ? ConditionField.Schema : ConditionField.Name;
+            var negate = tokens[i + 1] == "NOT";
+            var op = (negate, tokens[i + (negate ? 2 : 1)]) switch
+            {
+                (false, "=") => ConditionOperator.Equal,
+                (false, "!=") => ConditionOperator.NotEqual,
+                (false, "LIKE") => ConditionOperator.Like,
+                (true, "LIKE") => ConditionOperator.NotLike,
+                _ => (ConditionOperator?)null,
+            };
+            i += negate ? 3 : 2;
+            if (op is null || i >= tokens.Count || !tokens[i].StartsWith('\''))
+            {
+                return null;
+            }
+
+            conditions.Add(new FilterCondition(field, op.Value, tokens[i][1..]));
+            i++;
+            while (opened > 0 && i < tokens.Count && tokens[i] == ")")
+            {
+                (opened, i) = (opened - 1, i + 1);
+            }
+
+            if (opened > 0)
+            {
+                return null;
+            }
+
+            if (i == tokens.Count)
+            {
+                matchAll = joiner == "AND";
+                return conditions;
+            }
+
+            if (tokens[i] is not ("AND" or "OR") || (joiner is not null && joiner != tokens[i]))
+            {
+                return null;
+            }
+
+            (joiner, i) = (tokens[i], i + 1);
+        }
+    }
+
     private static List<string> Tokenize(string text)
     {
         var tokens = new List<string>();
