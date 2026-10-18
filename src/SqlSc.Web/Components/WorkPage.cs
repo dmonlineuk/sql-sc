@@ -29,6 +29,9 @@ public abstract class WorkPage : ComponentBase
 
     protected IReadOnlyList<GitStash> Stashes { get; set; } = [];
 
+    /// <summary>The branch a switch was refused to because of uncommitted changes, while the git bar asks what to do with them.</summary>
+    protected string? BlockedSwitch { get; set; }
+
     protected bool Busy { get; private set; }
 
     protected string? BusyText { get; private set; }
@@ -79,16 +82,33 @@ public abstract class WorkPage : ComponentBase
             return;
         }
 
+        var blocked = false;
         await Run(request.Create ? "Creating the branch..." : "Switching branch...", () =>
         {
+            if (!request.Create && request.Changes == UncommittedChanges.Refuse)
+            {
+                UpdateGit(link.Folder);
+                if (Git is { ChangedFiles.Count: > 0 })
+                {
+                    (blocked, BlockedSwitch) = (true, request.Branch);
+                    return null;
+                }
+            }
+
             var output = request.Create
                 ? GitSync.CreateBranch(link.Folder, request.Branch)
                 : GitSync.Switch(link.Folder, request.Branch, request.Changes, request.Message);
+            BlockedSwitch = null;
             UpdateGit(link.Folder);
             return string.IsNullOrWhiteSpace(output) ? $"On branch {request.Branch}." : output;
         });
-        await RefreshAfter();
+        if (!blocked)
+        {
+            await RefreshAfter();
+        }
     }
+
+    protected void CancelSwitch() => BlockedSwitch = null;
 
     /// <summary>Restores a stash into the working folder, or deletes it, then compares again.</summary>
     protected async Task ChangeStash((GitStash Stash, bool Restore) request)
@@ -128,6 +148,10 @@ public abstract class WorkPage : ComponentBase
         Git = GitSync.IsRepository(folder) ? GitSync.State(folder) : null;
         Branches = Git is null ? [] : GitSync.Branches(folder);
         Stashes = Git is null ? [] : GitSync.Stashes(folder);
+        if (Git is not { ChangedFiles.Count: > 0 })
+        {
+            BlockedSwitch = null;
+        }
     }
 
     protected bool Connect(out Link link, out WorkingFolder folder, out string connection)

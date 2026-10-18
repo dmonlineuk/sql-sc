@@ -12,11 +12,11 @@
             <option value="@branch.Name">@(branch.RemoteOnly ? $"{branch.Name} (remote)" : branch.Name)</option>
         }
     </select>
-    <button id="git-switch" @onclick="() => Switch(g)" disabled="@(Busy || string.IsNullOrEmpty(target))" title="git switch">Switch</button>
+    <button id="git-switch" @onclick="Switch" disabled="@(Busy || string.IsNullOrEmpty(target))" title="git switch">Switch</button>
     <input id="git-new-branch" class="inline" type="text" @bind="newBranch" @bind:event="oninput" placeholder="new-branch" disabled="@Busy" />
     <button id="git-create-branch" @onclick="Create" disabled="@(Busy || string.IsNullOrWhiteSpace(newBranch))" title="git switch --create, from the current commit; uncommitted changes come with you">New branch</button>
 
-    @if (pending is { } to)
+    @if (BlockedSwitch is { } to && g.ChangedFiles.Count > 0)
     {
         var count = g.ChangedFiles.Count;
         <div id="uncommitted" class="git-panel">
@@ -95,10 +95,10 @@
 @code {
     private string? target;
     private string? newBranch;
-    private string? pending;
     private string? message;
     private bool confirmDiscard;
     private string? dropping;
+    private string? askedFor;
 
     [Parameter] public GitState? Git { get; set; }
 
@@ -110,32 +110,33 @@
 
     [Parameter] public EventCallback<GitOperation> OnGit { get; set; }
 
+    [Parameter] public string? BlockedSwitch { get; set; }
+
     [Parameter] public EventCallback<BranchRequest> OnBranch { get; set; }
+
+    [Parameter] public EventCallback OnCancelSwitch { get; set; }
 
     [Parameter] public EventCallback<(GitStash Stash, bool Restore)> OnStash { get; set; }
 
-    private async Task Switch(GitState git)
+    protected override void OnParametersSet()
+    {
+        if (BlockedSwitch != askedFor)
+        {
+            (askedFor, message, confirmDiscard) = (BlockedSwitch, null, false);
+        }
+    }
+
+    private async Task Switch()
     {
         var branch = target!;
-        if (git.ChangedFiles.Count > 0)
-        {
-            (pending, message, confirmDiscard) = (branch, null, false);
-            return;
-        }
-
         target = null;
         await OnBranch.InvokeAsync(new BranchRequest(branch, false));
     }
 
-    private async Task Pending(UncommittedChanges changes)
-    {
-        var request = new BranchRequest(pending!, false, changes, changes == UncommittedChanges.Commit ? message : null);
-        Cancel();
-        target = null;
-        await OnBranch.InvokeAsync(request);
-    }
+    private async Task Pending(UncommittedChanges changes) =>
+        await OnBranch.InvokeAsync(new BranchRequest(BlockedSwitch!, false, changes, changes == UncommittedChanges.Commit ? message : null));
 
-    private void Cancel() => (pending, message, confirmDiscard) = (null, null, false);
+    private async Task Cancel() => await OnCancelSwitch.InvokeAsync();
 
     private async Task Create()
     {
