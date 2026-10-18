@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Components;
+using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Database;
 using SqlSc.Core.Export;
 using SqlSc.Core.Settings;
@@ -17,6 +18,9 @@ public enum GitOperation
 /// <summary>A branch to switch to or create, and what to do first with the working folder's uncommitted changes.</summary>
 public sealed record BranchRequest(string Branch, bool Create, UncommittedChanges Changes = UncommittedChanges.Refuse, string? Message = null);
 
+/// <summary>An object to lock or unlock; <see cref="Force"/> unlocks another login's lock.</summary>
+public sealed record LockRequest(string Name, bool Lock, string? Reason = null, bool Force = false);
+
 /// <summary>A page that compares the linked folder with its database: one piece of work at a time, with its outcome as a notice.</summary>
 public abstract class WorkPage : ComponentBase
 {
@@ -34,6 +38,9 @@ public abstract class WorkPage : ComponentBase
 
     /// <summary>Whether the link uses a SQL login whose password hasn't been entered yet, so the page shows a password box.</summary>
     protected bool PasswordNeeded => State.CurrentLink is { } link && ConnectionStrings.NeedsPassword(State.ConnectionFor(link)!);
+
+    /// <summary>The database's soft locks, by object name.</summary>
+    protected IReadOnlyDictionary<string, ObjectLock> Locks { get; private set; } = new Dictionary<string, ObjectLock>();
 
     protected bool Busy { get; private set; }
 
@@ -112,6 +119,37 @@ public abstract class WorkPage : ComponentBase
     }
 
     protected void CancelSwitch() => BlockedSwitch = null;
+
+    protected ObjectLock? LockOn(string name) => Locks.GetValueOrDefault(name);
+
+    /// <summary>"You", or the login that locked the object.</summary>
+    protected string? LockText(string name) => LockOn(name) is { } objectLock ? (objectLock.Mine ? "You" : objectLock.LockedBy) : null;
+
+    protected void SetLocks(IReadOnlyList<ObjectLock>? locks) =>
+        Locks = (locks ?? []).ToDictionary(l => l.Name, StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Locks or unlocks an object, then reads the locks again without comparing again.</summary>
+    protected async Task ChangeLock(LockRequest request)
+    {
+        if (!Connect(out _, out _, out var connection))
+        {
+            return;
+        }
+
+        await Run(request.Lock ? "Locking..." : "Unlocking...", () =>
+        {
+            var changed = request.Lock
+                ? ObjectLocks.Lock(connection, [request.Name], request.Reason)
+                : ObjectLocks.Unlock(connection, [request.Name], request.Force);
+            SetLocks(ObjectLocks.Read(connection));
+            if (changed.Problems.Count > 0)
+            {
+                throw new InvalidDataException(string.Join('\n', changed.Problems));
+            }
+
+            return $"{(request.Lock ? "Locked" : "Unlocked")} {changed.Locks[0].Name}.";
+        });
+    }
 
     /// <summary>Restores a stash into the working folder, or deletes it, then compares again.</summary>
     protected async Task ChangeStash((GitStash Stash, bool Restore) request)

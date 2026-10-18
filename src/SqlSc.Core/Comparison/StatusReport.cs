@@ -26,7 +26,7 @@ public sealed record ChildChange(ObjectStatus Status, string ObjectType, string 
 /// A changed object, with its changed children grouped under it as in the object's script file.
 /// An object whose only changes are to its children is reported as <see cref="ObjectStatus.Modified"/>.
 /// <see cref="Difference"/> is where a modified object's database and folder scripts first differ, when requested.
-/// <see cref="Side"/> is which side changed since the two last matched.
+/// <see cref="Side"/> is which side changed since the two last matched. <see cref="Lock"/> is the soft lock on the object, if any.
 /// </summary>
 public sealed record ObjectChange(
     ObjectStatus Status,
@@ -36,7 +36,8 @@ public sealed record ObjectChange(
     ChangeEvent? LastChange,
     IReadOnlyList<ChildChange> Children,
     string? Difference = null,
-    ChangeSide Side = ChangeSide.Unknown);
+    ChangeSide Side = ChangeSide.Unknown,
+    ObjectLock? Lock = null);
 
 /// <summary>
 /// A row of a static data table that differs, by its primary key. <see cref="ObjectStatus.New"/> rows are only in the database and
@@ -67,4 +68,5 @@ public sealed record StatusReport(
     ChangeLog ChangeLog,
     IReadOnlyDictionary<string, TimeSpan> Timings,
     DatabaseModelInfo DatabaseModel,
-    IReadOnlyList<DataChange> Data);
+    IReadOnlyList<DataChange> Data,
+    IReadOnlyList<ObjectLock>? Locks = null);

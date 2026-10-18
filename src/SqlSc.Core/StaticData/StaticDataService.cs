@@ -59,7 +59,7 @@ public static class StaticDataService
                 : throw new InvalidDataException($"{RedgateDatabaseInfo.FileName} lists data file '{file}', which isn't named Schema.Table{Suffix}."))
             .ToList();
 
-    /// <summary>The database's user tables with their approximate row counts, by schema and name. sql-sc's own change log isn't listed.</summary>
+    /// <summary>The database's user tables with their approximate row counts, by schema and name. sql-sc's own change log and lock tables aren't listed.</summary>
     public static IReadOnlyList<DatabaseTable> Tables(string connectionString)
     {
         const string sql = """
@@ -68,7 +68,7 @@ public static class StaticDataService
                 CAST(CASE WHEN EXISTS (SELECT 1 FROM sys.key_constraints k WHERE k.parent_object_id = t.object_id AND k.type = 'PK') THEN 1 ELSE 0 END AS bit)
             FROM sys.tables t
             JOIN sys.schemas s ON s.schema_id = t.schema_id
-            WHERE t.is_ms_shipped = 0 AND NOT (s.name = @logSchema AND t.name = @logTable)
+            WHERE t.is_ms_shipped = 0 AND NOT (s.name = @logSchema AND t.name IN (@logTable, @lockTable))
             ORDER BY s.name, t.name;
             """;
         using var connection = new SqlConnection(connectionString);
@@ -76,6 +76,7 @@ public static class StaticDataService
         using var command = new SqlCommand(sql, connection);
         command.Parameters.AddWithValue("@logSchema", ChangeLogTable.SchemaName);
         command.Parameters.AddWithValue("@logTable", ChangeLogTable.TableName);
+        command.Parameters.AddWithValue("@lockTable", ObjectLocks.TableName);
         using var reader = command.ExecuteReader();
         var tables = new List<DatabaseTable>();
         while (reader.Read())

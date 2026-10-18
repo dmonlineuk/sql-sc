@@ -1,5 +1,6 @@
 using System.Text;
 using Microsoft.Data.SqlClient;
+using SqlSc.Core.ChangeTracking;
 using SqlSc.Core.Comparison;
 using SqlSc.Core.Scripting;
 using SqlSc.Core.StaticData;
@@ -9,7 +10,7 @@ namespace SqlSc.Core.Export;
 
 /// <summary>Which changed objects to export: those named, every changed object, or those last changed by the current login.</summary>
 /// <param name="Data">Include the rows of selected static data tables; without it only their schema is selected.</param>
-/// <param name="Force">Export objects even if that undoes a change made in the folder since it last matched the database.</param>
+/// <param name="Force">Export objects even if that undoes a change made in the folder since it last matched the database, or another login has locked them.</param>
 /// <summary>
 /// The objects to export or apply. <see cref="DataNames"/>, when given, are the tables whose static data is included instead of
 /// <see cref="Names"/> or <see cref="All"/>, so a table's schema and rows can be picked separately.
@@ -70,7 +71,13 @@ public static class ExportService
         var report = session.Report;
         var problems = new List<string>();
         var skipped = new List<string>();
-        var selected = SideGuard.Filter(Select(report, selection, connectionString, problems), ChangeSide.Folder, selection.NamedObjects, selection.Force, problems, skipped);
+        var selected = ObjectLocks.Filter(
+            SideGuard.Filter(Select(report, selection, connectionString, problems), ChangeSide.Folder, selection.NamedObjects, selection.Force, problems, skipped),
+            "export",
+            selection.NamedObjects,
+            selection.Force,
+            problems,
+            skipped);
         var selectedData = SelectData(report, selection, problems);
 
         var database = ObjectFiles.Group(session.Database.Model);

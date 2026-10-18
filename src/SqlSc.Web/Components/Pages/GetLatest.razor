@@ -51,7 +51,7 @@ else
                         <thead>
                             <tr>
                                 <th><input type="checkbox" checked="@(rows.All(x => x.Selected))" @onchange="e => SelectAll(e.Value is true)" title="Select all" /></th>
-                                <th>Type</th><th>Object</th><th>Apply</th><th>Changed in</th><th>Changed by</th>
+                                <th>Type</th><th>Object</th><th>Apply</th><th>Changed in</th><th>Changed by</th><th>Locked by</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -64,6 +64,7 @@ else
                                     <td class="@(row.Drops ? "warn" : null)">@row.Action</td>
                                     <td class="@(row.Side is ChangeSide.Database or ChangeSide.Both ? "warn" : null)">@SideText(row.Side)</td>
                                     <td>@row.ChangedBy</td>
+                                    <td class="@(LockOn(row.Name) is { Mine: false } ? "warn" : null)">@LockText(row.Name)</td>
                                 </tr>
                             }
                         </tbody>
@@ -85,7 +86,11 @@ else
                 {
                     <p class="warn">Some selected objects are only in the database. Applying drops them.</p>
                 }
-                <label><input type="checkbox" id="force" @bind="force" /> Overwrite newer database changes, conflicts and other logins' changes (--force)</label>
+                @if (Selected.Any(x => !x.IsData && LockOn(x.Name) is { Mine: false }))
+                {
+                    <p class="warn">Some selected objects are locked by someone else, who may still be working on them. Applying them overwrites their work in the database, so it needs --force.</p>
+                }
+                <label><input type="checkbox" id="force" @bind="force" /> Overwrite newer database changes, conflicts, other logins' changes and objects locked by others (--force)</label>
                 <label><input type="checkbox" id="allow-data-loss" @bind="allowDataLoss" /> Allow changes that could lose data (--allow-data-loss)</label>
                 <div class="row">
                     <button id="preview" @onclick="Preview" disabled="@(Busy || !Selected.Any())">Preview script</button>
@@ -100,6 +105,10 @@ else
                 else
                 {
                     <h2>@current.Name</h2>
+                    @if (!current.IsData)
+                    {
+                        <LockControl Name="@current.Name" Lock="LockOn(current.Name)" Busy="Busy" OnChange="ChangeLock" />
+                    }
                     @if (current.Detail is { } detail)
                     {
                         <p class="muted">@detail</p>
@@ -206,6 +215,7 @@ else
                 dryRun: true,
                 baseline: BaselineStore.Default,
                 includeChangedBy: true);
+            SetLocks(result.Status.Locks);
             rows = [
                 .. result.Status.Changes.Select(ChangeRow.For),
                 .. result.Status.Data.Where(d => d.HasChanges).Select(ChangeRow.For),
@@ -367,7 +377,7 @@ else
                 Detail = change.Children.Count == 0 ? null : string.Join(", ", change.Children.Select(c => $"{c.Status} {c.ObjectType} {c.Name}")),
                 Drops = change.Status == ObjectStatus.New,
                 Incoming = incoming,
-                Selected = incoming,
+                Selected = incoming && change.Lock is not { Mine: false },
             };
         }
 
