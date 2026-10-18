@@ -27,8 +27,8 @@ Or run `sql-sc ui [path/to/working-folder]` for the local web UI. It opens your 
 folder and test the connection (Setup), and see each change with a side-by-side diff, then commit the ones you tick and
 optionally push (Commit), and pull, preview the deployment script for the changes you tick and apply it (Get latest). On
 a shared database, Get latest warns that applying changes it for everyone and asks you to confirm. Static data links and
-unlinks tables and shows which rows differ, and Settings edits the comparison options in `sql-sc.json` and shows the
-object filter. Locks lists, adds and removes soft locks, which Commit and Get latest also show. The git bar on Commit and Get latest switches branch (refused while the working folder has uncommitted
+unlinks tables and shows which rows differ, and Settings edits the comparison options in `sql-sc.json` and the
+object filter, with a preview of what each rule keeps and leaves out. Locks lists, adds and removes soft locks, which Commit and Get latest also show. The git bar on Commit and Get latest switches branch (refused while the working folder has uncommitted
 changes) or creates a new one. It listens on `127.0.0.1` only, and the address it prints includes a one-off token, so other
 users and websites can't use it. Press Ctrl+C to stop it.
 
@@ -110,6 +110,12 @@ dotnet run --project src/SqlSc.Cli -- data unlink path/to/working-folder Sales.C
 dotnet run --project src/SqlSc.Cli -- lock path/to/working-folder Sales.GetCustomer --reason "Adding paging"
 dotnet run --project src/SqlSc.Cli -- locks path/to/working-folder
 dotnet run --project src/SqlSc.Cli -- unlock path/to/working-folder Sales.GetCustomer
+
+# Object filter (Filter.scpf): leave out the staging schemas and tmp tables, then check what it keeps
+dotnet run --project src/SqlSc.Cli -- filter set path/to/working-folder all --exclude --schema "staging%"
+dotnet run --project src/SqlSc.Cli -- filter set path/to/working-folder Table --exclude --name "tmp%"
+dotnet run --project src/SqlSc.Cli -- filter show path/to/working-folder
+dotnet run --project src/SqlSc.Cli -- filter remove path/to/working-folder Table
 ```
 
 `export` writes one file per object in Redgate's layout (`Tables\Sales.Customer.sql`, `Stored Procedures\...`) with the
@@ -174,7 +180,13 @@ redirected, e.g. in scripts).
 
 `status` groups changes to keys, constraints, indexes, extended properties and permissions under the object whose
 script contains them. Objects excluded by `Filter.scpf` (Redgate's filter format: `@SCHEMA`/`@NAME` with `=`, `<>`,
-`LIKE`, `AND`, `OR`, `NOT`) are never reported.
+`LIKE`, `AND`, `OR`, `NOT`) are never reported. Build the filter with `sql-sc filter set` or in the UI's Settings
+rather than by hand: there's one rule for all objects (`all`) and at most one per object type (Table, View,
+StoredProcedure, ...), each tracking everything, nothing, only the objects matching its conditions, or everything except
+them (`--include`, `--none`, `--exclude`; conditions are `--schema`/`--name` names or LIKE patterns, matching any of
+them unless `--match-all`, or a raw `--where` expression). An object is tracked only if every rule that applies keeps
+it. Saving keeps everything else in an existing Redgate file. Files of objects a new rule leaves out stay in the folder;
+delete them with git if you no longer want them.
 
 An optional `sql-sc.json` in the working folder holds settings shared by the team. It never contains connection details.
 

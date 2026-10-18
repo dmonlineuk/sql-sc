@@ -10,6 +10,9 @@ public sealed record CatalogObject(string ObjectType, string? Schema, string Nam
     public IList<string> NameParts => Schema is null ? [Name] : [Schema, Name];
 }
 
+/// <summary>How many of a Redgate filter object type's objects there are, and how many a filter keeps.</summary>
+public sealed record FilterCount(string ObjectType, int Total, int Tracked);
+
 public sealed record ChildCounts(int Columns, int Indexes, int Constraints, int Triggers, int Statistics, int Permissions, int ExtendedProperties, int RoleMembers);
 
 /// <summary>
@@ -84,6 +87,18 @@ public sealed record CatalogSummary(IReadOnlyList<CatalogObject> Objects, ChildC
     /// <summary>The objects the filter keeps. Children (columns, indexes...) follow their owner.</summary>
     public IReadOnlyList<CatalogObject> Tracked(ObjectFilter filter) =>
         Objects.Where(o => filter.Includes(o.ObjectType, o.NameParts)).ToList();
+
+    /// <summary>The objects sql-sc could track: everything except its own change log and lock tables.</summary>
+    public IEnumerable<CatalogObject> UserObjects =>
+        Objects.Where(o => !string.Equals(o.Schema ?? (o.ObjectType == "Schema" ? o.Name : null), "sqlsc", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>For each Redgate filter object type the database has, how many objects there are and how many the filter keeps.</summary>
+    public IReadOnlyList<FilterCount> CountByType(ObjectFilter filter) =>
+        UserObjects
+            .GroupBy(o => ObjectFilter.RedgateTypeOf(o.ObjectType) ?? o.ObjectType, StringComparer.Ordinal)
+            .Select(g => new FilterCount(g.Key, g.Count(), g.Count(o => filter.Includes(o.ObjectType, o.NameParts))))
+            .OrderBy(c => c.ObjectType, StringComparer.Ordinal)
+            .ToList();
 
     public static IEnumerable<(string Key, int Count)> Largest(IEnumerable<CatalogObject> objects, Func<CatalogObject, string?> key, int top) =>
         objects.Select(key)
