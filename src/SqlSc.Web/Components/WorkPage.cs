@@ -32,6 +32,9 @@ public abstract class WorkPage : ComponentBase
     /// <summary>The branch a switch was refused to because of uncommitted changes, while the git bar asks what to do with them.</summary>
     protected string? BlockedSwitch { get; set; }
 
+    /// <summary>Whether the link uses a SQL login whose password hasn't been entered yet, so the page shows a password box.</summary>
+    protected bool PasswordNeeded => State.CurrentLink is { } link && ConnectionStrings.NeedsPassword(State.ConnectionFor(link)!);
+
     protected bool Busy { get; private set; }
 
     protected string? BusyText { get; private set; }
@@ -165,7 +168,6 @@ public abstract class WorkPage : ComponentBase
         connection = State.ConnectionFor(link)!;
         if (ConnectionStrings.NeedsPassword(connection))
         {
-            (Notice, Failed) = ("This link needs a SQL password. Enter it on Setup.", true);
             return false;
         }
 

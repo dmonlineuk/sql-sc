@@ -44,8 +44,10 @@
         <span class="muted">A password in the connection string is never saved.</span>
         @if (NeedsPassword)
         {
-            <label for="password">Password for the SQL login (kept in memory until sql-sc ui exits)</label>
-            <input id="password" type="password" @bind="password" autocomplete="off" />
+            <label for="password">Password for the SQL login</label>
+            <input id="password" type="password" @bind="password" autocomplete="off"
+                   placeholder="@(KnowsPassword ? "Already entered; sql-sc uses it until you close sql-sc ui" : null)" />
+            <span class="muted">sql-sc never saves the password: it keeps it in memory until you close sql-sc ui. Click Connect and save to use it on the other pages.</span>
         }
         <label for="mode">Mode</label>
         <select id="mode" @bind="mode">
@@ -54,7 +56,8 @@
         </select>
         <div class="row">
             <button id="test-connection" @onclick="TestConnection" disabled="@(busy || string.IsNullOrWhiteSpace(connection))">Test connection</button>
-            <button id="save-link" class="primary" @onclick="SaveLink" disabled="@(busy || string.IsNullOrWhiteSpace(connection))">Save link</button>
+            <button id="save-link" class="primary" @onclick="ConnectAndSave" disabled="@(busy || string.IsNullOrWhiteSpace(connection))">Connect and save</button>
+            <button id="save-only" @onclick="SaveWithoutConnecting" disabled="@(busy || string.IsNullOrWhiteSpace(connection))" title="Saves the link without contacting the database">Save without connecting</button>
             @if (State.CurrentLink is not null)
             {
                 <button id="remove-link" @onclick="RemoveLink" disabled="@busy">Remove link</button>
@@ -81,6 +84,10 @@
     private bool busy;
     private string? message;
     private bool failed;
+
+    private bool SavedLinkUnchanged => State.CurrentLink is { } link && !string.IsNullOrWhiteSpace(connection) && IsValid(connection) && SameConnection(link.Connection, connection);
+
+    private bool KnowsPassword => SavedLinkUnchanged && State.HasPassword(State.CurrentLink!.Folder);
 
     private bool NeedsPassword => !string.IsNullOrWhiteSpace(connection) && IsValid(connection) && ConnectionStrings.NeedsPassword(connection);
 
@@ -130,6 +137,10 @@
 
     private void ConnectionEdited() => message = null;
 
+    /// <summary>Whether two connection strings are the same apart from any password.</summary>
+    public static bool SameConnection(string saved, string edited) =>
+        ConnectionStrings.WithoutPassword(saved, out _) == ConnectionStrings.WithoutPassword(edited, out _);
+
     private string? Effective()
     {
         if (string.IsNullOrWhiteSpace(connection) || !IsValid(connection))
@@ -138,8 +149,39 @@
             return null;
         }
 
-        return ConnectionStrings.WithPassword(connection, password ?? Environment.GetEnvironmentVariable(ConnectionStrings.PasswordVariable));
+        return TypedPassword() is null && SavedLinkUnchanged
+            ? State.ConnectionFor(State.CurrentLink!)
+            : ConnectionStrings.WithPassword(connection, password ?? Environment.GetEnvironmentVariable(ConnectionStrings.PasswordVariable));
     }
+
+    /// <summary>The password in the connection string, or else the one typed into the password box.</summary>
+    private string? TypedPassword()
+    {
+        var inline = new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(connection).Password;
+        return !string.IsNullOrEmpty(inline) ? inline : string.IsNullOrEmpty(password) ? null : password;
+    }
+
+    private async Task<ServerInfo?> Query(string effective, string? failurePrefix = null)
+    {
+        busy = true;
+        message = null;
+        try
+        {
+            return await State.RunAsync(() => ServerInfo.Query(effective));
+        }
+        catch (Exception e) when (e is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or ArgumentException or AggregateException)
+        {
+            Fail(failurePrefix + e.Message);
+            return null;
+        }
+        finally
+        {
+            busy = false;
+        }
+    }
+
+    private static string Connected(ServerInfo info) =>
+        $"Connected to {info.DatabaseName} on {info.ServerName} ({info.Platform}, {info.ProductVersion}).";
 
     private async Task TestConnection()
     {
@@ -148,44 +190,67 @@
             return;
         }
 
-        busy = true;
-        message = null;
-        try
-        {
-            var info = await State.RunAsync(() => ServerInfo.Query(effective));
-            failed = false;
-            message = $"Connected to {info.DatabaseName} on {info.ServerName} ({info.Platform}, {info.ProductVersion}).";
-        }
-        catch (Exception e) when (e is Microsoft.Data.SqlClient.SqlException or InvalidOperationException or ArgumentException or AggregateException)
-        {
-            Fail(e.Message);
-        }
-        finally
-        {
-            busy = false;
-        }
-    }
-
-    private void SaveLink()
-    {
-        if (State.Folder is null || Effective() is null)
+        var (saved, typed) = (SavedLinkUnchanged ? State.CurrentLink : null, TypedPassword());
+        if (await Query(effective) is not { } info)
         {
             return;
         }
 
-        var stored = ConnectionStrings.WithoutPassword(connection!, out var removed);
-        State.Links.Save(new Link(State.Folder, stored, mode));
-        if (State.CurrentLink is { } saved)
+        var text = Connected(info);
+        if (saved is null)
         {
-            State.RememberPassword(saved.Folder, removed ? new Microsoft.Data.SqlClient.SqlConnectionStringBuilder(connection).Password : password);
+            text += " Click Connect and save to use this connection on the other pages.";
+        }
+        else if (typed is not null)
+        {
+            State.RememberPassword(saved.Folder, typed);
+            text += " sql-sc will use this password until you close sql-sc ui.";
+            State.NotifyChanged();
+        }
+
+        failed = false;
+        message = text;
+    }
+
+    private async Task ConnectAndSave()
+    {
+        if (State.Folder is not { } folder || Effective() is not { } effective)
+        {
+            return;
+        }
+
+        var (edited, unchanged, typed, linkMode) = (connection!, SavedLinkUnchanged, TypedPassword(), mode);
+        if (await Query(effective, "The link wasn't saved, because sql-sc couldn't connect: ") is not { } info)
+        {
+            return;
+        }
+
+        Save(folder, edited, unchanged, typed, linkMode, $"{Connected(info)} Link saved.");
+    }
+
+    private void SaveWithoutConnecting()
+    {
+        if (State.Folder is not { } folder || Effective() is null)
+        {
+            return;
+        }
+
+        Save(folder, connection!, SavedLinkUnchanged, TypedPassword(), mode, "Link saved without connecting to the database.");
+    }
+
+    private void Save(string folder, string edited, bool unchanged, string? typed, DatabaseMode linkMode, string text)
+    {
+        var stored = ConnectionStrings.WithoutPassword(edited, out _);
+        State.Links.Save(new Link(folder, stored, linkMode));
+        if (State.CurrentLink is { } saved && (typed is not null || !unchanged))
+        {
+            State.RememberPassword(saved.Folder, typed);
         }
 
         links = [.. State.Links.All()];
-        connection = stored;
-        failed = false;
-        message = removed
-            ? "Link saved. The password wasn't saved; sql-sc will use it until this window's sql-sc ui exits."
-            : "Link saved.";
+        (connection, password, failed) = (stored, null, false);
+        message = text
+            + (typed is not null && ConnectionStrings.NeedsPassword(stored) ? " The password wasn't saved; sql-sc will use it until you close sql-sc ui." : string.Empty);
         State.NotifyChanged();
     }
 
