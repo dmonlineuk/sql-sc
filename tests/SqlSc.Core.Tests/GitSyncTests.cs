@@ -121,7 +121,7 @@ public sealed class GitSyncTests : IDisposable
         GitSync.Switch(repo, "main");
         Assert.DoesNotContain("whitespace", GitSync.RestoreStash(repo, stash.Id), StringComparison.Ordinal);
         Assert.Empty(GitSync.Stashes(repo));
-        Assert.Equal("changed \nGO \n", File.ReadAllText(Path.Combine(repo, "b.sql")));
+        Assert.Equal("changed \nGO \n", File.ReadAllText(Path.Combine(repo, "b.sql")).ReplaceLineEndings("\n"));
         Assert.Equal("four", File.ReadAllText(Path.Combine(repo, "d.sql")));
         Assert.False(File.Exists(Path.Combine(repo, "a.sql")));
 
