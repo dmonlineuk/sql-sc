@@ -34,6 +34,18 @@ public class StaticDataTests(SqlServerFixture sql)
         """;
 
     [Fact]
+    public void TablesListsUserTablesWithRowsAndPrimaryKeys()
+    {
+        var database = CreateDatabase(LookupTable);
+
+        var tables = StaticDataService.Tables(sql.ConnectionString(database));
+
+        Assert.Equal(
+            [("app", "Lookup", 2L, true), ("app", "NoKey", 0L, false)],
+            tables.Select(t => (t.Schema, t.Name, t.Rows, t.HasPrimaryKey)));
+    }
+
+    [Fact]
     public void StatusReportsRowsByKeyAndApplyMakesTheDatabaseMatch()
     {
         var database = sql.CreateDatabaseFromFolder(SqlServerFixture.DemoFolder);

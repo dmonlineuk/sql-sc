@@ -1,15 +1,153 @@
 @if (Git is { } g)
 {
-    <span>Branch <b>@(g.Branch ?? "(detached)")</b>@(g.Upstream is null ? " (no upstream)" : $" -> {g.Upstream}: {g.Ahead} ahead, {g.Behind} behind")</span>
+    var here = g.Branch ?? "(detached)";
+    <span>Branch <b>@here</b>@(g.Upstream is null ? " (no upstream)" : $" -> {g.Upstream}: {g.Ahead} ahead, {g.Behind} behind")</span>
     <button id="git-fetch" @onclick="() => OnGit.InvokeAsync(GitOperation.Fetch)" disabled="@Busy">Fetch</button>
     <button id="git-pull" @onclick="() => OnGit.InvokeAsync(GitOperation.Pull)" disabled="@Busy" title="git pull --ff-only">Pull</button>
     <button id="git-push" @onclick="() => OnGit.InvokeAsync(GitOperation.Push)" disabled="@Busy">Push</button>
+    <select id="git-branch" class="inline" @bind="target" disabled="@Busy" title="Branches; remote-only ones get a local tracking branch">
+        <option value="">Switch to...</option>
+        @foreach (var branch in Branches.Where(b => b.Name != g.Branch))
+        {
+            <option value="@branch.Name">@(branch.RemoteOnly ? $"{branch.Name} (remote)" : branch.Name)</option>
+        }
+    </select>
+    <button id="git-switch" @onclick="Switch" disabled="@(Busy || string.IsNullOrEmpty(target))" title="git switch">Switch</button>
+    <input id="git-new-branch" class="inline" type="text" @bind="newBranch" @bind:event="oninput" placeholder="new-branch" disabled="@Busy" />
+    <button id="git-create-branch" @onclick="Create" disabled="@(Busy || string.IsNullOrWhiteSpace(newBranch))" title="git switch --create, from the current commit; uncommitted changes come with you">New branch</button>
+
+    @if (BlockedSwitch is { } to && g.ChangedFiles.Count > 0)
+    {
+        var count = g.ChangedFiles.Count;
+        <div id="uncommitted" class="git-panel">
+            <p>
+                <b>The working folder has @count uncommitted change(s), so you can't switch to @to yet.</b>
+                These are edits to files that haven't been saved in a commit, so they don't belong to any branch yet. Choose what happens to them:
+            </p>
+            <details>
+                <summary>Show the changes</summary>
+                <pre>@string.Join('\n', g.ChangedFiles)</pre>
+                <p class="muted">M = modified, D = deleted, A or ?? = new file, R = renamed.</p>
+            </details>
+
+            <div class="option">
+                <b>Commit them to @here, then switch</b>
+                <p class="muted">Saves them as a commit on @here. Nothing is lost: switch back to @here to see them again, and Push to share them. This is the safest choice.</p>
+                <div class="row">
+                    <input id="switch-commit-message" class="inline" type="text" @bind="message" @bind:event="oninput" placeholder="Commit message" />
+                    <button id="switch-commit" class="primary" @onclick="() => Pending(UncommittedChanges.Commit)" disabled="@(Busy || string.IsNullOrWhiteSpace(message))">Commit and switch</button>
+                </div>
+            </div>
+
+            <div class="option">
+                <b>Stash them, then switch</b>
+                <p class="muted">
+                    Puts them on a shelf and leaves the folder as @here's last commit has it. Restore them later from <i>Stashed changes</i>, on
+                    whichever branch you're on at the time. A stash only exists on this PC (it's never pushed), so don't leave it there for long.
+                </p>
+                <button id="switch-stash" @onclick="() => Pending(UncommittedChanges.Stash)" disabled="@Busy">Stash and switch</button>
+            </div>
+
+            <div class="option">
+                <b>Discard them, then switch</b>
+                <p class="muted">Throws them away and puts the files back as they are in @here's last commit. New files are deleted. <b>This can't be undone.</b></p>
+                <label class="checks"><input id="switch-discard-confirm" type="checkbox" @bind="confirmDiscard" /> I understand that these @count change(s) will be lost for good</label>
+                <button id="switch-discard" class="danger" @onclick="() => Pending(UncommittedChanges.Discard)" disabled="@(Busy || !confirmDiscard)">Discard and switch</button>
+            </div>
+
+            <button id="switch-cancel" @onclick="Cancel">Cancel</button>
+        </div>
+    }
+
+    @if (Stashes.Count > 0)
+    {
+        <details id="stashes" class="git-panel">
+            <summary>Stashed changes (@Stashes.Count)</summary>
+            <p class="muted">Restore puts a stash's changes back into the folder on the current branch, @here, and removes the stash. The folder can't have other uncommitted changes when you do.</p>
+            <table class="grid">
+                <tbody>
+                    @foreach (var stash in Stashes)
+                    {
+                        <tr>
+                            <td>@stash.Description</td>
+                            <td class="muted">@stash.Created.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
+                            <td>
+                                @if (dropping == stash.Id)
+                                {
+                                    <span>Delete these changes for good?</span>
+                                    <button class="danger" @onclick="() => Stash(stash, false)" disabled="@Busy">Delete</button>
+                                    <button @onclick="() => dropping = null">Cancel</button>
+                                }
+                                else
+                                {
+                                    <button @onclick="() => Stash(stash, true)" disabled="@Busy">Restore</button>
+                                    <button @onclick="() => dropping = stash.Id" disabled="@Busy">Delete...</button>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </details>
+    }
 }
 
 @code {
+    private string? target;
+    private string? newBranch;
+    private string? message;
+    private bool confirmDiscard;
+    private string? dropping;
+    private string? askedFor;
+
     [Parameter] public GitState? Git { get; set; }
+
+    [Parameter] public IReadOnlyList<GitBranch> Branches { get; set; } = [];
+
+    [Parameter] public IReadOnlyList<GitStash> Stashes { get; set; } = [];
 
     [Parameter] public bool Busy { get; set; }
 
     [Parameter] public EventCallback<GitOperation> OnGit { get; set; }
+
+    [Parameter] public string? BlockedSwitch { get; set; }
+
+    [Parameter] public EventCallback<BranchRequest> OnBranch { get; set; }
+
+    [Parameter] public EventCallback OnCancelSwitch { get; set; }
+
+    [Parameter] public EventCallback<(GitStash Stash, bool Restore)> OnStash { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        if (BlockedSwitch != askedFor)
+        {
+            (askedFor, message, confirmDiscard) = (BlockedSwitch, null, false);
+        }
+    }
+
+    private async Task Switch()
+    {
+        var branch = target!;
+        target = null;
+        await OnBranch.InvokeAsync(new BranchRequest(branch, false));
+    }
+
+    private async Task Pending(UncommittedChanges changes) =>
+        await OnBranch.InvokeAsync(new BranchRequest(BlockedSwitch!, false, changes, changes == UncommittedChanges.Commit ? message : null));
+
+    private async Task Cancel() => await OnCancelSwitch.InvokeAsync();
+
+    private async Task Create()
+    {
+        var branch = newBranch!.Trim();
+        newBranch = null;
+        await OnBranch.InvokeAsync(new BranchRequest(branch, true));
+    }
+
+    private async Task Stash(GitStash stash, bool restore)
+    {
+        dropping = null;
+        await OnStash.InvokeAsync((stash, restore));
+    }
 }

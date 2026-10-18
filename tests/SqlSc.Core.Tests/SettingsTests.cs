@@ -46,6 +46,17 @@ public class SettingsTests
     }
 
     [Fact]
+    public void ProjectSettingsSaveToTheFolder()
+    {
+        var root = FixturePaths.CreateTempFolder();
+        var settings = new ProjectSettings { Filter = "x.scpf", Compare = new CompareSettings { IgnorePermissions = true } };
+
+        settings.Save(root);
+
+        Assert.Equal(settings, ProjectSettings.Load(root));
+    }
+
+    [Fact]
     public void InvalidProjectSettingsThrow()
     {
         var root = FixturePaths.CreateTempFolder((ProjectSettings.FileName, "{ \"filter\": "));

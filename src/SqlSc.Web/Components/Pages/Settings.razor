@@ -1,0 +1,167 @@
+@page "/settings"
+@inject UiState State
+
+<PageTitle>sql-sc - Settings</PageTitle>
+
+@if (State.Folder is null)
+{
+    <section class="card"><p>Open a working folder on <a href="">Setup</a> first.</p></section>
+}
+else
+{
+    <section class="card">
+        <h2>Comparison options</h2>
+        <p class="muted">Saved in @ProjectSettings.FileName in the working folder and shared with your team, so commit it with git.</p>
+        <div class="checks">
+            <label><input id="ignore-whitespace" type="checkbox" @bind="ignoreWhitespace" /> Ignore whitespace</label>
+            <label><input id="ignore-comments" type="checkbox" @bind="ignoreComments" /> Ignore comments</label>
+            <label><input id="ignore-column-order" type="checkbox" @bind="ignoreColumnOrder" /> Ignore column order</label>
+            <label><input id="ignore-permissions" type="checkbox" @bind="ignorePermissions" /> Ignore permissions</label>
+            <label><input id="ignore-role-membership" type="checkbox" @bind="ignoreRoleMembership" /> Ignore role membership</label>
+            <label><input id="ignore-extended-properties" type="checkbox" @bind="ignoreExtendedProperties" /> Ignore extended properties</label>
+        </div>
+        <label for="filter">Object filter file (relative to the working folder; leave empty to use @ProjectSettings.DefaultFilter if it exists)</label>
+        <input id="filter" type="text" @bind="filter" placeholder="@ProjectSettings.DefaultFilter" />
+        <div class="row">
+            <button id="save-settings" class="primary" @onclick="Save">Save</button>
+            <button id="reset-settings" @onclick="Load">Undo changes</button>
+        </div>
+        @if (message is not null)
+        {
+            <p class="@(failed ? "error" : "ok")">@message</p>
+        }
+    </section>
+
+    <section class="card">
+        <h2>Object filter</h2>
+        @if (filterPath is null)
+        {
+            <p class="muted">No filter file, so every object is under source control.</p>
+        }
+        else if (filterError is not null)
+        {
+            <p class="error">@filterError</p>
+        }
+        else
+        {
+            <p class="muted">@filterPath. Edit the file to change it; Redgate's filter editor writes the same format.</p>
+            @if (rules.Count == 0)
+            {
+                <p class="muted">The filter has no rules, so every object is included.</p>
+            }
+            else
+            {
+                <table class="grid">
+                    <thead><tr><th>Object type</th><th>Rule</th><th>Expression</th></tr></thead>
+                    <tbody>
+                        @foreach (var rule in rules)
+                        {
+                            <tr>
+                                <td>@(rule.ObjectType == ObjectFilter.AllObjects ? "All objects" : rule.ObjectType)</td>
+                                <td>@(rule.Include ? "Include matching" : "Exclude matching")</td>
+                                <td><code>@(rule.Expression.Length == 0 ? "(everything)" : rule.Expression)</code></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        }
+    </section>
+}
+
+@code {
+    private bool ignoreWhitespace;
+    private bool ignoreComments;
+    private bool ignoreColumnOrder;
+    private bool ignorePermissions;
+    private bool ignoreRoleMembership;
+    private bool ignoreExtendedProperties;
+    private string? filter;
+    private string? filterPath;
+    private string? filterError;
+    private IReadOnlyList<FilterRule> rules = [];
+    private string? message;
+    private bool failed;
+
+    protected override void OnInitialized() => Load();
+
+    private void Load()
+    {
+        message = null;
+        if (State.Folder is not { } folder)
+        {
+            return;
+        }
+
+        try
+        {
+            var settings = ProjectSettings.Load(folder);
+            (ignoreWhitespace, ignoreComments, ignoreColumnOrder) = (settings.Compare.IgnoreWhitespace, settings.Compare.IgnoreComments, settings.Compare.IgnoreColumnOrder);
+            (ignorePermissions, ignoreRoleMembership, ignoreExtendedProperties) = (settings.Compare.IgnorePermissions, settings.Compare.IgnoreRoleMembership, settings.Compare.IgnoreExtendedProperties);
+            filter = settings.Filter;
+            LoadFilter(folder, settings.Filter);
+        }
+        catch (InvalidDataException e)
+        {
+            (message, failed) = (e.Message, true);
+        }
+    }
+
+    private void LoadFilter(string folder, string? configured)
+    {
+        filterPath = configured ?? (File.Exists(Path.Combine(folder, ProjectSettings.DefaultFilter)) ? ProjectSettings.DefaultFilter : null);
+        (filterError, rules) = (null, []);
+        if (filterPath is null)
+        {
+            return;
+        }
+
+        try
+        {
+            rules = ObjectFilter.LoadScpf(Path.Combine(folder, filterPath)).Rules;
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or System.Xml.XmlException or UnauthorizedAccessException)
+        {
+            filterError = $"{filterPath}: {e.Message}";
+        }
+    }
+
+    private void Save()
+    {
+        if (State.Folder is not { } folder)
+        {
+            return;
+        }
+
+        var configured = string.IsNullOrWhiteSpace(filter) ? null : filter.Trim();
+        if (configured is not null && !File.Exists(Path.Combine(folder, configured)))
+        {
+            (message, failed) = ($"{configured} doesn't exist in the working folder.", true);
+            return;
+        }
+
+        try
+        {
+            var settings = ProjectSettings.Load(folder) with
+            {
+                Filter = configured,
+                Compare = new CompareSettings
+                {
+                    IgnoreWhitespace = ignoreWhitespace,
+                    IgnoreComments = ignoreComments,
+                    IgnoreColumnOrder = ignoreColumnOrder,
+                    IgnorePermissions = ignorePermissions,
+                    IgnoreRoleMembership = ignoreRoleMembership,
+                    IgnoreExtendedProperties = ignoreExtendedProperties,
+                },
+            };
+            settings.Save(folder);
+            LoadFilter(folder, configured);
+            (message, failed) = ($"Saved {ProjectSettings.FileName}. Commit it with git to share it with your team.", false);
+        }
+        catch (Exception e) when (e is IOException or InvalidDataException or UnauthorizedAccessException)
+        {
+            (message, failed) = (e.Message, true);
+        }
+    }
+}
