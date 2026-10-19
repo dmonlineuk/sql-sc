@@ -38,7 +38,7 @@ else
 
     @if (result is { } r)
     {
-        <div class="split">
+        <div class="stacked">
             <section class="card">
                 <h2>@rows.Count(x => x.Incoming) incoming changes to @r.Status.Database on @r.Status.Server</h2>
                 @if (rows.Count == 0)
@@ -47,6 +47,7 @@ else
                 }
                 else
                 {
+                    <div class="table-scroll changes">
                     <table class="grid">
                         <thead>
                             <tr>
@@ -69,6 +70,7 @@ else
                             }
                         </tbody>
                     </table>
+                    </div>
                 }
                 @foreach (var problem in r.Problems)
                 {

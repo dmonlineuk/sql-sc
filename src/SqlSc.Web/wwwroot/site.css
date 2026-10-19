@@ -25,8 +25,10 @@ table.grid th, table.grid td { text-align: left; padding: .3rem .5rem; border-bo
 table.grid tr.selected { background: #ddf4ff; }
 table.grid tbody tr { cursor: pointer; }
 .split { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 1rem; }
+.stacked { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; }
+.table-scroll.changes { max-height: 40vh; }
 .diff { width: 100%; border-collapse: collapse; font: 12px/1.4 ui-monospace, Consolas, monospace; table-layout: fixed; }
-.diff td { padding: 0 .4rem; white-space: pre-wrap; word-break: break-all; vertical-align: top; }
+.diff td { padding: 0 .4rem; white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: top; }
 .diff td.num { width: 3.5rem; color: var(--muted); text-align: right; user-select: none; }
 .diff td.del { background: var(--del); }
 .diff td.add { background: var(--add); }
