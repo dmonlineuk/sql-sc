@@ -9,6 +9,13 @@
 }
 else
 {
+    @if (State.CurrentLink is { } passwordLink && PasswordNeeded)
+    {
+        <section class="card">
+            <PasswordPrompt Link="passwordLink" Busy="catalogBusy" OnConnected="LoadCatalog" />
+        </section>
+    }
+
     <section class="card">
         <h2>Comparison options</h2>
         <p class="muted">Saved in @ProjectSettings.FileName in the working folder and shared with your team, so commit it with git.</p>
@@ -130,7 +137,7 @@ else
         }
         else if (PasswordNeeded)
         {
-            <PasswordPrompt Link="link" Busy="catalogBusy" OnConnected="LoadCatalog" />
+            <p class="muted">Enter the password at the top of the page to see which objects the filter keeps.</p>
         }
         else if (catalogBusy)
         {
