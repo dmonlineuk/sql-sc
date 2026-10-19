@@ -67,6 +67,18 @@ else
                     </select>
                     <button @onclick="() => ruleRows.Remove(row)">Remove rule</button>
                 </div>
+                @{
+                    var leftOut = LeavesOut(row);
+                }
+                <p class="muted" style="margin:.2rem 0">@Covers(row.Type)@(leftOut is { } n ? $" In the database it leaves out {n.ToString("N0", CultureInfo.CurrentCulture)} object(s)." : "")</p>
+                @if (leftOut == 0 && row.Mode == FilterMode.Except && row.Type != ObjectFilter.AllObjects)
+                {
+                    <p class="warn" style="margin:.2rem 0">
+                        These conditions don't match any @row.Type in the database, so this rule leaves nothing out. A @row.Type rule only looks at
+                        @(row.Type == "Schema" ? "schemas themselves, not the objects in them" : $"{row.Type} objects"). To leave out other objects by schema or name,
+                        use All objects or the rule for their type.
+                    </p>
+                }
                 @if (row.Mode is FilterMode.Only or FilterMode.Except)
                 {
                     @if (row.Raw)
@@ -297,6 +309,32 @@ else
         finally
         {
             catalogBusy = false;
+        }
+    }
+
+    private static string Covers(string type) => type switch
+    {
+        ObjectFilter.AllObjects => "Applies to every object, whatever its type.",
+        "Schema" => "Applies to schemas only, not the objects in them; @SCHEMA and @NAME are both the schema's name.",
+        _ => $"Applies to {type} objects only.",
+    };
+
+    /// <summary>How many of the database's objects this rule alone leaves out, or null without a preview or with invalid conditions.</summary>
+    private int? LeavesOut(RuleRow row)
+    {
+        if (catalog is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            var filter = ObjectFilter.FromRules([row.ToRule()], caseSensitive);
+            return catalog.UserObjects.Count(o => !filter.Includes(o.ObjectType, o.NameParts));
+        }
+        catch (InvalidDataException)
+        {
+            return null;
         }
     }
 
